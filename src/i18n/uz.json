@@ -22,7 +22,7 @@
     "rule1": "Yuborgandan keyin ortga qaytib bo‘lmaydi",
     "rule2": "Taymer darhol ishga tushadi",
     "rule3": "Yuborishdan oldin barcha savollarga javob bering",
-    "rule4": "Varaqlar almashtirish va copy/paste kuzatiladi",
+    "rule4": "Tab/oyna almashtirish va copy/paste kuzatiladi",
     "startExam": "Imtihonni boshlash",
     "startingExam": "Imtihon boshlanmoqda..."
   },
@@ -50,7 +50,9 @@
     "noSwitchTabs": "Iltimos, imtihon vaqtida tab/oynalarni almashtirmang.",
     "timesUpAutoSubmitting": "Vaqt tugadi. Avto-yuborilmoqda...",
     "autoSubmitted": "Avto-yuborildi (maket)",
-    "submitted": "Imtihon yuborildi (maket)"
+    "submitted": "Imtihon yuborildi (maket)",
+    "noBackDuringExam": "Imtihon vaqtida orqaga qaytib bo‘lmaydi."
+
   },
   "login": {
     "title": "Talaba imtihon portali",
@@ -85,10 +87,13 @@
     "reviewDesc": "Javoblaringizni va to‘g‘ri yechimlarni ko‘ring",
     "questionNumber": "{{number}}-savol",
     "markedForReview": "Tekshirish uchun belgilangan",
-    "points": "{{count}} ball",
-    "points_plural": "{{count}} ball",
+    "points_one": "{{count}} ball",
+    "points_other": "{{count}} ball",
     "noAnswer": "Javob tanlanmagan",
     "noResult": "Natija topilmadi. Avval imtihonni yakunlang.",
-    "failedLoad": "Natijalarni yuklab bo‘lmadi"
+    "failedLoad": "Natijalarni yuklab bo‘lmadi",
+    "logout": "Chiqish",
+    "multiSelectHint": "Bir nechta javobli savol"
+
   }
 }

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -12,19 +12,55 @@ import { toast } from 'sonner';
 import { Clock, FileText, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+const NO_EXAM_TOAST_ID = 'dashboard-no-exam';
+const INVALID_EXAM_TOAST_ID = 'dashboard-invalid-exam';
+
 export function DashboardPage() {
   const { t } = useTranslation();
 
   const [exam, setExam] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // ✅ StrictMode guard: do not run "load exam" logic twice
+  const didInitRef = useRef(false);
+
+  // ✅ Lock browser back button on dashboard (prevents returning to Result/Exam)
+  const dashLockRef = useRef(false);
+  useEffect(() => {
+    if (location.pathname !== '/dashboard') return;
+    if (dashLockRef.current) return;
+    dashLockRef.current = true;
+
+    // push one state so Back triggers popstate inside dashboard
+    window.history.pushState({ dashboardLock: true }, '', window.location.href);
+
+    const onPopState = () => {
+      // stay on dashboard
+      navigate('/dashboard', { replace: true });
+
+      // push again so another Back still stays here
+      window.history.pushState({ dashboardLock: true }, '', window.location.href);
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      dashLockRef.current = false;
+    };
+  }, [navigate, location.pathname]);
 
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+
     const storedExam = localStorage.getItem('currentExam');
     if (!storedExam) {
-      toast.error(t('errors.noExam'));
-      navigate('/login');
+      toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
+      navigate('/login', { replace: true });
       return;
     }
 
@@ -32,8 +68,9 @@ export function DashboardPage() {
       const examData = JSON.parse(storedExam);
       setExam(examData);
     } catch {
-      toast.error(t('errors.invalidExam'));
-      navigate('/login');
+      toast.error(t('errors.invalidExam'), { id: INVALID_EXAM_TOAST_ID });
+      navigate('/login', { replace: true });
+      return;
     } finally {
       setLoading(false);
     }
@@ -71,9 +108,11 @@ export function DashboardPage() {
       };
 
       localStorage.setItem('currentAttempt', JSON.stringify(attemptData));
-      navigate(`/exam/${attemptId}`);
+
+      // ✅ replace so dashboard isn't reachable by browser back during exam
+      navigate(`/exam/${attemptId}`, { replace: true });
     } catch (error: any) {
-      toast.error(error?.message || t('errors.startExamFailed'));
+      toast.error(error?.message || t('errors.startExamFailed'), { id: 'start-exam-failed' });
     } finally {
       setStarting(false);
     }

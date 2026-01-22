@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,19 +13,28 @@ import { toast } from 'sonner';
 import { mockQuestions } from '@/lib/mockExam';
 import { useTranslation } from 'react-i18next';
 
-type AnswerState = { selectedOption?: string; isMarked?: boolean };
+type AnswerState = {
+  selectedOption?: string; // single
+  selectedOptions?: string[]; // multi
+  isMarked?: boolean;
+};
 type AnswersMap = Record<number, AnswerState>;
 
 interface ReviewAnswer {
   questionId: number;
   text: string;
   options: Array<{ id: string; text: string }>;
-  correctOption: string;
-  selectedOption: string;
+  type: 'single' | 'multi';
+  correctOptionIds: string[];
+  selectedOptionIds: string[];
   isCorrect: boolean;
   points: number;
   isMarked: boolean;
+  images?: string[];
 }
+
+const NO_RESULT_TOAST_ID = 'no-result-found';
+const FAILED_LOAD_TOAST_ID = 'result-failed-load';
 
 function gradeFromPercentage(p: number) {
   if (p >= 90) return 'A';
@@ -35,14 +44,23 @@ function gradeFromPercentage(p: number) {
   return 'F';
 }
 
+// ✅ strict: ALL correct selected and no extras
+function isMultiCorrect(selected: string[], correct: string[]) {
+  const s = [...selected].sort();
+  const c = [...correct].sort();
+  if (s.length !== c.length) return false;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== c[i]) return false;
+  }
+  return true;
+}
+
 export function ResultPage() {
   const { t } = useTranslation();
-
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
-
   const [resultMeta, setResultMeta] = useState<{
     examTitle: string;
     score: number;
@@ -53,29 +71,33 @@ export function ResultPage() {
 
   const [answers, setAnswers] = useState<ReviewAnswer[]>([]);
 
-  const correctMap = useMemo<Record<number, string>>(
-    () => ({
-      1: 'B',
-      2: 'A',
-      3: 'C',
-      4: 'A',
-      5: 'B',
-      6: 'A',
-      7: 'B',
-      8: 'A',
-      9: 'B',
-    }),
-    []
-  );
-
   useEffect(() => {
-    if (!attemptId) return;
+    if (!attemptId) {
+      // ✅ avoid double toasts in dev StrictMode
+      toast.dismiss(NO_RESULT_TOAST_ID);
+      toast.dismiss(FAILED_LOAD_TOAST_ID);
+      navigate('/login', { replace: true });
+      return;
+    }
+
+    // ✅ If logged out (no session), don't even try to show errors/toasts
+    // Prevents: user logs out -> presses Back -> old /result/:id mounts -> toasts appear
+    const hasSession = !!localStorage.getItem('currentExam') && !!localStorage.getItem('currentAttempt');
+    if (!hasSession) {
+      toast.dismiss(NO_RESULT_TOAST_ID);
+      toast.dismiss(FAILED_LOAD_TOAST_ID);
+      navigate('/login', { replace: true });
+      return;
+    }
 
     try {
       const rawResult = localStorage.getItem(`result_${attemptId}`);
+
       if (!rawResult) {
-        toast.error(t('result.noResult'));
-        navigate('/dashboard');
+        // ✅ only one toast (id) + also dismiss first to be safe in StrictMode
+        toast.dismiss(NO_RESULT_TOAST_ID);
+        toast.error(t('result.noResult'), { id: NO_RESULT_TOAST_ID });
+        navigate('/login', { replace: true });
         return;
       }
 
@@ -94,19 +116,40 @@ export function ResultPage() {
       const violationCount = stored?.violationCount ?? 0;
 
       const review: ReviewAnswer[] = mockQuestions.map((q) => {
-        const selectedOption = answersMap[q.id]?.selectedOption || '';
-        const correctOption = correctMap[q.id] || 'A';
-        const isCorrect = selectedOption !== '' && selectedOption === correctOption;
+        const type = (q.type ?? 'single') as 'single' | 'multi';
+
+        const correctOptionIds =
+          type === 'multi'
+            ? (q.correctOptionIds ?? [])
+            : q.correctOptionId
+            ? [q.correctOptionId]
+            : [];
+
+        const selectedOptionIds =
+          type === 'multi'
+            ? (answersMap[q.id]?.selectedOptions ?? [])
+            : answersMap[q.id]?.selectedOption
+            ? [answersMap[q.id]!.selectedOption!]
+            : [];
+
+        const isCorrect =
+          type === 'multi'
+            ? isMultiCorrect(selectedOptionIds, correctOptionIds)
+            : selectedOptionIds.length === 1 &&
+              correctOptionIds.length === 1 &&
+              selectedOptionIds[0] === correctOptionIds[0];
 
         return {
           questionId: q.id,
-          text: q.text,        // ✅ keep as-is (no translation)
-          options: q.options,  // ✅ keep as-is (no translation)
-          correctOption,
-          selectedOption,
+          text: q.text,
+          options: q.options,
+          type,
+          correctOptionIds,
+          selectedOptionIds,
           isCorrect,
           points: 1,
           isMarked: !!answersMap[q.id]?.isMarked,
+          images: q.images,
         };
       });
 
@@ -116,18 +159,35 @@ export function ResultPage() {
       setAnswers(review);
       setResultMeta({ examTitle, score, totalPoints, submittedAt, violationCount });
     } catch {
-      toast.error(t('result.failedLoad'));
-      navigate('/dashboard');
+      toast.dismiss(FAILED_LOAD_TOAST_ID);
+      toast.error(t('result.failedLoad'), { id: FAILED_LOAD_TOAST_ID });
+      navigate('/login', { replace: true });
     } finally {
       setLoading(false);
     }
-  }, [attemptId, navigate, correctMap, t]);
+  }, [attemptId, navigate, t]);
+
+  const handleLogout = () => {
+    // ✅ clear session keys so Back can't reopen exam/result
+    localStorage.removeItem('currentAttempt');
+    localStorage.removeItem('currentExam');
+
+    // optional auth keys
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+
+    // ✅ also dismiss any toasts from result page
+    toast.dismiss(NO_RESULT_TOAST_ID);
+    toast.dismiss(FAILED_LOAD_TOAST_ID);
+
+    navigate('/login', { replace: true });
+  };
 
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto" />
           <p className="mt-4 text-muted-foreground">{t('result.loading')}</p>
         </div>
       </div>
@@ -139,8 +199,17 @@ export function ResultPage() {
   const percentage = Math.round((resultMeta.score / resultMeta.totalPoints) * 100);
   const grade = gradeFromPercentage(percentage);
 
+  // ✅ 24-hour format
   const submittedAtText = resultMeta.submittedAt
-    ? new Date(resultMeta.submittedAt).toLocaleString()
+    ? new Date(resultMeta.submittedAt).toLocaleString(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      })
     : '-';
 
   return (
@@ -193,8 +262,8 @@ export function ResultPage() {
             </div>
 
             <div className="pt-4 border-t">
-              <Button onClick={() => navigate('/dashboard')} className="w-full sm:w-auto">
-                {t('result.back')}
+              <Button onClick={handleLogout} className="w-full sm:w-auto">
+                {t('result.logout')}
               </Button>
             </div>
           </CardContent>
@@ -241,15 +310,20 @@ export function ResultPage() {
                       </span>
                     </div>
 
-                    {/* ✅ keep question text as-is */}
                     <p className="font-medium mb-3">{answer.text}</p>
+
+                    {answer.type === 'multi' && (
+                      <p className="text-xs text-muted-foreground">
+                        {t('result.multiSelectHint')}
+                      </p>
+                    )}
                   </div>
                 </div>
 
                 <div className="space-y-2 ml-8">
                   {answer.options.map((option) => {
-                    const isCorrect = option.id === answer.correctOption;
-                    const isSelected = option.id === answer.selectedOption;
+                    const isCorrect = answer.correctOptionIds.includes(option.id);
+                    const isSelected = answer.selectedOptionIds.includes(option.id);
 
                     let bgColor = 'bg-background';
                     if (isCorrect) bgColor = 'bg-green-100 dark:bg-green-900';
@@ -258,20 +332,15 @@ export function ResultPage() {
                     return (
                       <div
                         key={option.id}
-                        className={`p-3 rounded border ${bgColor} ${
-                          isCorrect ? 'border-green-500' : ''
-                        }`}
+                        className={`p-3 rounded border ${bgColor} ${isCorrect ? 'border-green-500' : ''}`}
                       >
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{option.id}.</span>
-
-                          {/* ✅ keep option text as-is */}
                           <span>{option.text}</span>
 
                           {isCorrect && (
                             <CheckCircle2 className="h-4 w-4 text-green-600 ml-auto" />
                           )}
-
                           {isSelected && !isCorrect && (
                             <XCircle className="h-4 w-4 text-destructive ml-auto" />
                           )}
@@ -281,7 +350,7 @@ export function ResultPage() {
                   })}
                 </div>
 
-                {!answer.selectedOption && (
+                {answer.selectedOptionIds.length === 0 && (
                   <div className="mt-3 ml-8 flex items-center gap-2 text-muted-foreground">
                     <AlertCircle className="h-4 w-4" />
                     <span className="text-sm">{t('result.noAnswer')}</span>

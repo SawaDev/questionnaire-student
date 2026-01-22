@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { mockQuestions } from '@/lib/mockExam';
 import { Button } from '@/components/ui/button';
@@ -12,10 +12,15 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
-import { CheckCircle2, Wifi, WifiOff } from 'lucide-react';
+import { CheckCircle2, Wifi, WifiOff, Flag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useFocusViolation } from '@/hooks/useFocusViolation';
 
-type AnswerState = { selectedOption?: string; isMarked?: boolean };
+type AnswerState = {
+  selectedOption?: string; // single
+  selectedOptions?: string[]; // multi
+  isMarked?: boolean;
+};
 type AnswersMap = Record<number, AnswerState>;
 
 function formatTime(seconds: number) {
@@ -24,9 +29,12 @@ function formatTime(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+const NO_BACK_TOAST_ID = 'no-back-during-exam';
+const NO_EXAM_TOAST_ID = 'exam-no-exam';
+const MISSING_ATTEMPT_TOAST_ID = 'missing-attempt-id';
+
 export function ExamPage() {
   const { t } = useTranslation();
-
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
@@ -40,41 +48,61 @@ export function ExamPage() {
 
   const [loading, setLoading] = useState(true);
   const [answers, setAnswers] = useState<AnswersMap>({});
-
-  // timer persistence (frontend-only “server-like”)
   const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  const [openImage, setOpenImage] = useState<string | null>(null);
+  const [sessionOk, setSessionOk] = useState(false);
+
+  // ✅ StrictMode guards
+  const didInitRef = useRef(false);
+  const backLockRef = useRef(false);
 
   const displayTime = formatTime(Math.max(0, remainingSeconds));
   const isWarning = remainingSeconds <= 5 * 60;
   const isExpired = remainingSeconds <= 0;
 
-  // Load exam + attempt info
+  // ✅ Session/auth guard (prevents opening exam after logout via Back)
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+
     if (!attemptId) {
-      toast.error(t('errors.missingAttemptId'));
-      navigate('/dashboard');
+      toast.error(t('errors.missingAttemptId'), { id: MISSING_ATTEMPT_TOAST_ID });
+      navigate('/login', { replace: true });
       return;
     }
 
-    // Load exam title + duration from localStorage
-    let durationSeconds = 60 * 60; // default 60 minutes
     const storedExam = localStorage.getItem('currentExam');
-    if (storedExam) {
-      try {
-        const exam = JSON.parse(storedExam);
-        if (exam?.title) setExamTitle(exam.title);
-        durationSeconds =
-          Number(exam?.duration_seconds) ||
-          (Number(exam?.durationMinutes) ? Number(exam.durationMinutes) * 60 : durationSeconds);
-      } catch {
-        // ignore
-      }
+    const storedAttempt = localStorage.getItem('currentAttempt');
+
+    // If user logged out, do not allow exam to open
+    if (!storedExam || !storedAttempt) {
+      toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
+      setSessionOk(false);
+      navigate('/login', { replace: true });
+      return;
     }
 
-    // Ensure attempt meta exists (for resume logic)
+    setSessionOk(true);
+
+    // Load exam title + duration from localStorage
+    let durationSeconds = 60 * 60;
+    try {
+      const exam = JSON.parse(storedExam);
+      if (exam?.title) setExamTitle(exam.title);
+      durationSeconds =
+        Number(exam?.duration_seconds) ||
+        (Number(exam?.durationMinutes) ? Number(exam.durationMinutes) * 60 : durationSeconds);
+    } catch {
+      toast.error(t('errors.invalidExam'), { id: 'exam-invalid-exam' });
+      setSessionOk(false);
+      navigate('/login', { replace: true });
+      return;
+    }
+
+    // Ensure attempt meta exists (resume logic)
     const attemptKey = `attempt_${attemptId}`;
     const existing = localStorage.getItem(attemptKey);
-
     if (!existing) {
       const startedAt = Date.now();
       const meta = { startedAt, durationSeconds };
@@ -98,9 +126,32 @@ export function ExamPage() {
     localStorage.setItem(`answers_${attemptId}`, JSON.stringify(answers));
   }, [answers, attemptId]);
 
-  // Compute remaining time from startedAt + durationSeconds (resume after refresh)
+  // ✅ Block browser back during exam (only when session is valid and not completed)
   useEffect(() => {
-    if (!attemptId || loading) return;
+    if (!attemptId) return;
+    if (!sessionOk) return;
+    if (loading) return;
+    if (localStorage.getItem(`completed_${attemptId}`) === 'true') return;
+    if (backLockRef.current) return;
+    backLockRef.current = true;
+
+    window.history.pushState(null, '', window.location.href);
+
+    const onPopState = () => {
+      window.history.pushState(null, '', window.location.href);
+      toast.warning(t('exam.noBackDuringExam'), { id: NO_BACK_TOAST_ID });
+    };
+
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      backLockRef.current = false;
+    };
+  }, [t, attemptId, sessionOk, loading]);
+
+  // Timer (resume)
+  useEffect(() => {
+    if (!attemptId || loading || !sessionOk) return;
 
     const attemptKey = `attempt_${attemptId}`;
     const raw = localStorage.getItem(attemptKey);
@@ -123,10 +174,9 @@ export function ExamPage() {
       setRemainingSeconds(left);
 
       if (left === 0) {
-        // auto submit once
         const doneKey = `completed_${attemptId}`;
         if (localStorage.getItem(doneKey) !== 'true') {
-          toast.info(t('exam.timesUpAutoSubmitting'));
+          toast.info(t('exam.timesUpAutoSubmitting'), { id: 'times-up' });
           doSubmit(true);
         }
       }
@@ -136,7 +186,7 @@ export function ExamPage() {
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attemptId, loading, t]);
+  }, [attemptId, loading, sessionOk, t]);
 
   // Online/offline
   useEffect(() => {
@@ -150,13 +200,17 @@ export function ExamPage() {
     };
   }, []);
 
-  // Anti-cheat (UI-only)
+  // Anti-cheat: context menu + copy/paste/cut
   useEffect(() => {
     const logViolation = (type: string) => {
       setViolationCount((prev) => {
         const next = prev + 1;
-        if (next === 1) toast.warning(t('exam.monitoringActive'));
-        if (type === 'blur') toast.warning(t('exam.noSwitchTabs'));
+
+        if (next === 1) {
+          toast.warning(t('exam.monitoringActive'), { id: 'monitoring-active' });
+        }
+
+        toast.warning(t('exam.noSwitchTabs'), { id: `no-switch-tabs-${type}` });
         return next;
       });
     };
@@ -177,28 +231,41 @@ export function ExamPage() {
       e.preventDefault();
       logViolation('cut');
     };
-    const handleBlur = () => logViolation('blur');
 
     document.addEventListener('contextmenu', handleContextMenu);
     document.addEventListener('copy', handleCopy);
     document.addEventListener('paste', handlePaste);
     document.addEventListener('cut', handleCut);
-    window.addEventListener('blur', handleBlur);
 
     return () => {
       document.removeEventListener('contextmenu', handleContextMenu);
       document.removeEventListener('copy', handleCopy);
       document.removeEventListener('paste', handlePaste);
       document.removeEventListener('cut', handleCut);
-      window.removeEventListener('blur', handleBlur);
     };
   }, [t]);
+
+  // Anti-cheat: tab/window switching (deduped)
+  useFocusViolation({
+    enabled: true,
+    cooldownMs: 1500,
+    onViolation: () => {
+      setViolationCount((prev) => {
+        const next = prev + 1;
+        if (next === 1) {
+          toast.warning(t('exam.monitoringActive'), { id: 'monitoring-active' });
+        }
+        toast.warning(t('exam.noSwitchTabs'), { id: 'no-switch-tabs' });
+        return next;
+      });
+    },
+  });
 
   const handleNavigate = (index: number) => {
     if (index >= 0 && index < questions.length) setCurrentIndex(index);
   };
 
-  const handleAnswerChange = (optionId: string) => {
+  const handleSingleAnswerChange = (optionId: string) => {
     const q = questions[currentIndex];
     if (!q) return;
 
@@ -206,6 +273,23 @@ export function ExamPage() {
       ...prev,
       [q.id]: { ...(prev[q.id] || {}), selectedOption: optionId },
     }));
+  };
+
+  const handleMultiAnswerToggle = (optionId: string) => {
+    const q = questions[currentIndex];
+    if (!q) return;
+
+    setAnswers((prev) => {
+      const existing = prev[q.id]?.selectedOptions ?? [];
+      const nextSelected = existing.includes(optionId)
+        ? existing.filter((x) => x !== optionId)
+        : [...existing, optionId];
+
+      return {
+        ...prev,
+        [q.id]: { ...(prev[q.id] || {}), selectedOptions: nextSelected },
+      };
+    });
   };
 
   const handleMarkForReview = () => {
@@ -218,14 +302,31 @@ export function ExamPage() {
     }));
   };
 
-  const answeredCount = questions.filter((q) => answers[q.id]?.selectedOption).length;
+  const answeredCount = questions.filter((q) => {
+    const a = answers[q.id];
+    const isMulti = (q.type ?? 'single') === 'multi';
+    if (isMulti) return (a?.selectedOptions?.length ?? 0) > 0;
+    return !!a?.selectedOption;
+  }).length;
 
   const handleSubmit = () => {
-    const unanswered = questions.filter((q) => !answers[q.id]?.selectedOption);
-    if (unanswered.length > 0) {
+    const unansweredNotFlagged = questions.filter((q) => {
+      const a = answers[q.id];
+      const isMulti = (q.type ?? 'single') === 'multi';
+
+      const unanswered = isMulti
+        ? (a?.selectedOptions?.length ?? 0) === 0
+        : !a?.selectedOption;
+
+      const flagged = !!a?.isMarked;
+      return unanswered && !flagged;
+    });
+
+    if (unansweredNotFlagged.length > 0) {
       setShowSubmitDialog(true);
       return;
     }
+
     doSubmit(false);
   };
 
@@ -246,8 +347,11 @@ export function ExamPage() {
     localStorage.setItem(`result_${attemptId}`, JSON.stringify(result));
     localStorage.setItem(`completed_${attemptId}`, 'true');
 
-    toast.success(auto ? t('exam.autoSubmitted') : t('exam.submitted'));
-    navigate(`/result/${attemptId}`);
+    toast.success(auto ? t('exam.autoSubmitted') : t('exam.submitted'), {
+      id: auto ? 'exam-auto-submitted' : 'exam-submitted',
+    });
+
+    navigate(`/result/${attemptId}`, { replace: true });
   };
 
   if (loading) {
@@ -261,17 +365,39 @@ export function ExamPage() {
     );
   }
 
+  // ✅ If completed, never show exam again
   if (attemptId && localStorage.getItem(`completed_${attemptId}`) === 'true') {
-    navigate(`/result/${attemptId}`);
+    navigate(`/result/${attemptId}`, { replace: true });
+    return null;
+  }
+
+  // ✅ If session became invalid (logout + back), redirect immediately (no flashes)
+  if (!sessionOk) {
+    navigate('/login', { replace: true });
     return null;
   }
 
   const currentQuestion = questions[currentIndex];
   const currentAnswer = currentQuestion ? answers[currentQuestion.id] : null;
 
+  const unansweredNotFlaggedCount = questions.filter((q) => {
+    const a = answers[q.id];
+    const isMulti = (q.type ?? 'single') === 'multi';
+
+    const unanswered = isMulti
+      ? (a?.selectedOptions?.length ?? 0) === 0
+      : !a?.selectedOption;
+
+    const flagged = !!a?.isMarked;
+    return unanswered && !flagged;
+  }).length;
+
+  const isMulti = (currentQuestion?.type ?? 'single') === 'multi';
+  const selectedSingle = currentAnswer?.selectedOption;
+  const selectedMulti = currentAnswer?.selectedOptions ?? [];
+
   return (
     <div className="min-h-screen bg-background">
-      {/* Top Bar */}
       <div className={`border-b sticky top-0 z-10 bg-background ${isWarning ? 'bg-destructive/10' : ''}`}>
         <div className="container mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -298,7 +424,6 @@ export function ExamPage() {
 
       <div className="container mx-auto px-4 py-6 max-w-6xl">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Main Content */}
           <div className="lg:col-span-3">
             {currentQuestion && (
               <Card>
@@ -313,39 +438,57 @@ export function ExamPage() {
                     </Button>
                   </div>
 
-                  {/* DO NOT translate question text (backend later) */}
                   <h2 className="text-xl font-semibold">{currentQuestion.text}</h2>
 
-                  <div className="space-y-3">
-                    {currentQuestion.options.map((option) => (
-                      <button
-                        key={option.id}
-                        onClick={() => handleAnswerChange(option.id)}
-                        className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
-                          currentAnswer?.selectedOption === option.id
-                            ? 'border-primary bg-primary/10'
-                            : 'border-border hover:border-primary/50'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                              currentAnswer?.selectedOption === option.id
-                                ? 'border-primary bg-primary'
-                                : 'border-muted-foreground'
-                            }`}
-                          >
-                            {currentAnswer?.selectedOption === option.id && (
-                              <CheckCircle2 className="h-3 w-3 text-primary-foreground" />
-                            )}
-                          </div>
+                  {currentQuestion.images?.length ? (
+                    <div className="flex flex-wrap gap-3">
+                      {currentQuestion.images.map((src) => (
+                        <button
+                          key={src}
+                          type="button"
+                          onClick={() => setOpenImage(src)}
+                          className="border rounded-lg overflow-hidden hover:opacity-90"
+                        >
+                          <img src={src} alt="Question" className="h-28 w-auto object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
 
-                          <span className="font-medium">{option.id}.</span>
-                          {/* DO NOT translate option text */}
-                          <span>{option.text}</span>
-                        </div>
-                      </button>
-                    ))}
+                  <div className="space-y-3">
+                    {currentQuestion.options.map((option) => {
+                      const isSelected = isMulti
+                        ? selectedMulti.includes(option.id)
+                        : selectedSingle === option.id;
+
+                      const onPick = () => {
+                        if (isMulti) handleMultiAnswerToggle(option.id);
+                        else handleSingleAnswerChange(option.id);
+                      };
+
+                      return (
+                        <button
+                          key={option.id}
+                          onClick={onPick}
+                          className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                            isSelected ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div
+                              className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                                isSelected ? 'border-primary bg-primary' : 'border-muted-foreground'
+                              }`}
+                            >
+                              {isSelected && <CheckCircle2 className="h-3 w-3 text-primary-foreground" />}
+                            </div>
+
+                            <span className="font-medium">{option.id}.</span>
+                            <span>{option.text}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
 
                   <div className="flex gap-3 pt-4">
@@ -369,7 +512,6 @@ export function ExamPage() {
             )}
           </div>
 
-          {/* Navigation Palette */}
           <div className="lg:col-span-1">
             <Card>
               <CardContent className="p-4">
@@ -378,7 +520,12 @@ export function ExamPage() {
                 <div className="grid grid-cols-5 gap-2">
                   {questions.map((q, index) => {
                     const a = answers[q.id];
-                    const isAnswered = !!a?.selectedOption;
+                    const qIsMulti = (q.type ?? 'single') === 'multi';
+
+                    const isAnswered = qIsMulti
+                      ? (a?.selectedOptions?.length ?? 0) > 0
+                      : !!a?.selectedOption;
+
                     const isMarked = !!a?.isMarked;
                     const isCurrent = index === currentIndex;
 
@@ -391,11 +538,14 @@ export function ExamPage() {
                       <button
                         key={q.id}
                         onClick={() => handleNavigate(index)}
-                        className={`aspect-square rounded-md font-medium text-sm transition-all ${classes} ${
+                        className={`relative aspect-square rounded-md font-medium text-sm transition-all ${classes} ${
                           isCurrent ? 'ring-2 ring-ring' : ''
                         }`}
                       >
                         {index + 1}
+                        {isMarked && (
+                          <Flag className="absolute top-1 right-1 h-3.5 w-3.5 text-white/90" />
+                        )}
                       </button>
                     );
                   })}
@@ -411,7 +561,9 @@ export function ExamPage() {
                     <span>{t('exam.answered')}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 rounded bg-orange-500" />
+                    <div className="w-4 h-4 rounded bg-orange-500 flex items-center justify-center">
+                      <Flag className="h-3 w-3 text-white" />
+                    </div>
                     <span>{t('exam.marked')}</span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -424,13 +576,15 @@ export function ExamPage() {
                   <p className="text-sm text-muted-foreground">
                     {t('exam.progress', { answered: answeredCount, total: questions.length })}
                   </p>
+
+                  {unansweredNotFlaggedCount > 0 && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {unansweredNotFlaggedCount} unanswered (not flagged)
+                    </p>
+                  )}
                 </div>
 
-                <Button
-                  className="w-full mt-4"
-                  onClick={handleSubmit}
-                  disabled={answeredCount < questions.length || isExpired}
-                >
+                <Button className="w-full mt-4" onClick={handleSubmit} disabled={isExpired}>
                   {t('exam.finish')}
                 </Button>
 
@@ -443,13 +597,12 @@ export function ExamPage() {
         </div>
       </div>
 
-      {/* Submit Dialog */}
       <Dialog open={showSubmitDialog} onOpenChange={setShowSubmitDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('exam.unansweredDialogTitle')}</DialogTitle>
             <DialogDescription>
-              {t('exam.unansweredDialogDesc', { count: questions.length - answeredCount })}
+              {t('exam.unansweredDialogDesc', { count: unansweredNotFlaggedCount })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -458,6 +611,18 @@ export function ExamPage() {
             </Button>
             <Button onClick={() => doSubmit(false)}>{t('exam.submitAnyway')}</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!openImage} onOpenChange={(v) => !v && setOpenImage(null)}>
+        <DialogContent className="max-w-4xl">
+          {openImage && (
+            <img
+              src={openImage}
+              alt="Full"
+              className="w-full h-auto max-h-[80vh] object-contain rounded"
+            />
+          )}
         </DialogContent>
       </Dialog>
     </div>

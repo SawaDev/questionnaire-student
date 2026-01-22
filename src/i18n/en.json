@@ -50,7 +50,8 @@
     "noSwitchTabs": "Please do not switch tabs/windows during the exam.",
     "timesUpAutoSubmitting": "Time's up. Auto-submitting...",
     "autoSubmitted": "Auto-submitted (mock)",
-    "submitted": "Exam submitted (mock)"
+    "submitted": "Exam submitted (mock)",
+    "noBackDuringExam": "You can’t go back during the exam."
   },
   "login": {
     "title": "Student Exam Portal",
@@ -89,6 +90,11 @@
     "points_plural": "{{count}} points",
     "noAnswer": "No answer provided",
     "noResult": "No result found. Please complete the exam first.",
-    "failedLoad": "Failed to load results"
-  }
+    "failedLoad": "Failed to load results",
+    "logout": "Logout",
+    "multiSelectHint": "Multi-select question"
+
+    
+
+  } 
 }
