@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { examsApi } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import { Button } from '@/components/ui/button';
@@ -24,54 +25,75 @@ import { useTranslation } from 'react-i18next';
 
 export function LoginPage() {
   const { t } = useTranslation();
+  const { login } = useAuth();
 
-  const [subjectId, setSubjectId] = useState<string>('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [examId, setExamId] = useState<string>('');
+  const [studentId, setStudentId] = useState<string>('');
+  const [otp, setOtp] = useState('');
 
-  const [subjects, setSubjects] = useState<
-    Array<{ id: number; name: string; code: string }>
-  >([]);
+  const [exams, setExams] = useState<any[]>([]);
+  const [students, setStudents] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(false);
-  const [subjectsLoading, setSubjectsLoading] = useState(true);
+  const [examsLoading, setExamsLoading] = useState(true);
+  const [studentsLoading, setStudentsLoading] = useState(false);
 
-  const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    // UI-only: no backend, just use local subjects
-    setSubjects([
-      { id: 1, name: 'Mathematics', code: 'MATH101' },
-      { id: 2, name: 'Computer Science', code: 'CS101' },
-      { id: 3, name: 'Physics', code: 'PHYS101' },
-      { id: 4, name: 'Chemistry', code: 'CHEM101' },
-      { id: 5, name: 'Biology', code: 'BIO101' },
-    ]);
-    setSubjectsLoading(false);
+    const fetchExams = async () => {
+      try {
+        const response = await examsApi.getActiveExams();
+        setExams(response.data);
+      } catch (error) {
+        toast.error('Failed to load active exams');
+      } finally {
+        setExamsLoading(false);
+      }
+    };
+    fetchExams();
   }, []);
+
+  useEffect(() => {
+    if (examId) {
+      const fetchStudents = async () => {
+        setStudentsLoading(true);
+        try {
+          const response = await examsApi.getAssignedStudents(examId);
+          setStudents(response.data);
+        } catch (error) {
+          toast.error('Failed to load students for this exam');
+        } finally {
+          setStudentsLoading(false);
+        }
+      };
+      fetchStudents();
+    } else {
+      setStudents([]);
+    }
+  }, [examId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!subjectId || !username || !password) {
+    if (!examId || !studentId || !otp) {
       toast.error(t('login.fillAll'));
       return;
     }
 
     setLoading(true);
     try {
-      const response = await login(Number(subjectId), username, password);
+      const response = await login(examId, Number(studentId), otp);
       toast.success(t('login.success'));
 
-      // Store exam info for dashboard
-      localStorage.setItem('currentExam', JSON.stringify(response.exam));
-
-      const from = (location.state as any)?.from?.pathname || '/dashboard';
-      navigate(from);
+      // Ensure the user state is updated before navigating
+      setTimeout(() => {
+        const from = (location.state as any)?.from?.pathname || '/dashboard';
+        navigate(from, { replace: true });
+      }, 100);
     } catch (error: any) {
-      toast.error(error?.message || t('login.failed'));
+      toast.error(error?.response?.data?.message || t('login.failed'));
     } finally {
       setLoading(false);
     }
@@ -79,7 +101,6 @@ export function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 sm:p-6 lg:p-8 bg-muted/30 relative">
-      {/* Language switcher */}
       <div className="absolute top-4 right-4">
         <LanguageSwitcher />
       </div>
@@ -96,67 +117,70 @@ export function LoginPage() {
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="subject">{t('login.subject')}</Label>
-
+                <Label htmlFor="exam">{t('login.subject') || 'Exam'}</Label>
                 <Select
-                  value={subjectId}
-                  onValueChange={setSubjectId}
+                  value={examId}
+                  onValueChange={setExamId}
                   required
-                  disabled={subjectsLoading}
+                  disabled={examsLoading}
                 >
-                  <SelectTrigger id="subject" className="w-full">
+                  <SelectTrigger id="exam" className="w-full">
                     <SelectValue
                       placeholder={
-                        subjectsLoading
+                        examsLoading
                           ? t('login.loadingSubjects')
                           : t('login.subjectPlaceholder')
                       }
                     />
                   </SelectTrigger>
-
                   <SelectContent>
-                    {subjects.length === 0 && !subjectsLoading ? (
-                      <SelectItem value="none" disabled>
-                        {t('login.noSubjects')}
+                    {exams.map((exam) => (
+                      <SelectItem key={exam.id} value={String(exam.id)}>
+                        {exam.title}
                       </SelectItem>
-                    ) : (
-                      subjects.map((subject) => (
-                        <SelectItem key={subject.id} value={String(subject.id)}>
-                          {subject.name} ({subject.code})
-                        </SelectItem>
-                      ))
-                    )}
+                    ))}
                   </SelectContent>
                 </Select>
-
-                {subjects.length > 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    {t('login.subjectsAvailable', { count: subjects.length })}
-                  </p>
-                )}
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="username">{t('login.studentId')}</Label>
+                <Label htmlFor="student">{t('login.student') || 'Student'}</Label>
+                <Select
+                  value={studentId}
+                  onValueChange={setStudentId}
+                  required
+                  disabled={studentsLoading || !examId}
+                >
+                  <SelectTrigger id="student" className="w-full">
+                    <SelectValue
+                      placeholder={
+                        studentsLoading
+                          ? 'Loading students...'
+                          : 'Select your name'
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {students.map((student) => (
+                      <SelectItem key={student.id} value={String(student.id)}>
+                        {student.username}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="otp">{t('login.otp') || 'OTP Code'}</Label>
                 <Input
-                  id="username"
+                  id="otp"
                   type="text"
-                  placeholder={t('login.studentIdPlaceholder')}
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Enter 6-digit OTP"
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value)}
                   required
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="password">{t('login.password')}</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder={t('login.passwordPlaceholder')}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
+                  className="text-center text-lg tracking-widest font-mono"
+                  maxLength={6}
                 />
               </div>
 

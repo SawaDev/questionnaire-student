@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { mockQuestions } from '@/lib/mockExam';
+import { examsApi, attemptsApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
@@ -14,7 +14,6 @@ import {
 import { toast } from 'sonner';
 import { CheckCircle2, Wifi, WifiOff, Flag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useFocusViolation } from '@/hooks/useFocusViolation';
 
 type AnswerState = {
   selectedOption?: string; // single
@@ -29,7 +28,6 @@ function formatTime(seconds: number) {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-const NO_BACK_TOAST_ID = 'no-back-during-exam';
 const NO_EXAM_TOAST_ID = 'exam-no-exam';
 const MISSING_ATTEMPT_TOAST_ID = 'missing-attempt-id';
 
@@ -38,13 +36,24 @@ export function ExamPage() {
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
-  const questions = useMemo(() => mockQuestions, []);
+  const [questions, setQuestions] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [examTitle, setExamTitle] = useState('Mock Exam');
+  const [examTitle, setExamTitle] = useState('Loading...');
   const [showSubmitDialog, setShowSubmitDialog] = useState(false);
 
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [violationCount, setViolationCount] = useState(0);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const [loading, setLoading] = useState(true);
   const [answers, setAnswers] = useState<AnswersMap>({});
@@ -55,7 +64,6 @@ export function ExamPage() {
 
   // ✅ StrictMode guards
   const didInitRef = useRef(false);
-  const backLockRef = useRef(false);
 
   const displayTime = formatTime(Math.max(0, remainingSeconds));
   const isWarning = remainingSeconds <= 5 * 60;
@@ -72,224 +80,112 @@ export function ExamPage() {
       return;
     }
 
-    const storedExam = localStorage.getItem('currentExam');
     const storedAttempt = localStorage.getItem('currentAttempt');
-
-    // If user logged out, do not allow exam to open
-    if (!storedExam || !storedAttempt) {
+    if (!storedAttempt) {
       toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
       setSessionOk(false);
       navigate('/login', { replace: true });
       return;
     }
 
-    setSessionOk(true);
-
-    // Load exam title + duration from localStorage
-    let durationSeconds = 60 * 60;
-    try {
-      const exam = JSON.parse(storedExam);
-      if (exam?.title) setExamTitle(exam.title);
-      durationSeconds =
-        Number(exam?.duration_seconds) ||
-        (Number(exam?.durationMinutes) ? Number(exam.durationMinutes) * 60 : durationSeconds);
-    } catch {
-      toast.error(t('errors.invalidExam'), { id: 'exam-invalid-exam' });
-      setSessionOk(false);
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    // Ensure attempt meta exists (resume logic)
-    const attemptKey = `attempt_${attemptId}`;
-    const existing = localStorage.getItem(attemptKey);
-    if (!existing) {
-      const startedAt = Date.now();
-      const meta = { startedAt, durationSeconds };
-      localStorage.setItem(attemptKey, JSON.stringify(meta));
-    }
-
-    // Restore answers
-    try {
-      const raw = localStorage.getItem(`answers_${attemptId}`);
-      if (raw) setAnswers(JSON.parse(raw));
-    } catch {
-      // ignore
-    }
-
-    setLoading(false);
-  }, [attemptId, navigate, t]);
-
-  // Persist answers
-  useEffect(() => {
-    if (!attemptId) return;
-    localStorage.setItem(`answers_${attemptId}`, JSON.stringify(answers));
-  }, [answers, attemptId]);
-
-  // ✅ Block browser back during exam (only when session is valid and not completed)
-  useEffect(() => {
-    if (!attemptId) return;
-    if (!sessionOk) return;
-    if (loading) return;
-    if (localStorage.getItem(`completed_${attemptId}`) === 'true') return;
-    if (backLockRef.current) return;
-    backLockRef.current = true;
-
-    window.history.pushState(null, '', window.location.href);
-
-    const onPopState = () => {
-      window.history.pushState(null, '', window.location.href);
-      toast.warning(t('exam.noBackDuringExam'), { id: NO_BACK_TOAST_ID });
-    };
-
-    window.addEventListener('popstate', onPopState);
-    return () => {
-      window.removeEventListener('popstate', onPopState);
-      backLockRef.current = false;
-    };
-  }, [t, attemptId, sessionOk, loading]);
-
-  // Timer (resume)
-  useEffect(() => {
-    if (!attemptId || loading || !sessionOk) return;
-
-    const attemptKey = `attempt_${attemptId}`;
-    const raw = localStorage.getItem(attemptKey);
-    if (!raw) return;
-
-    let startedAt = Date.now();
-    let durationSeconds = 60 * 60;
-
-    try {
-      const meta = JSON.parse(raw);
-      startedAt = Number(meta.startedAt) || startedAt;
-      durationSeconds = Number(meta.durationSeconds) || durationSeconds;
-    } catch {
-      // ignore
-    }
-
-    const tick = () => {
-      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      const left = Math.max(0, durationSeconds - elapsed);
-      setRemainingSeconds(left);
-
-      if (left === 0) {
-        const doneKey = `completed_${attemptId}`;
-        if (localStorage.getItem(doneKey) !== 'true') {
-          toast.info(t('exam.timesUpAutoSubmitting'), { id: 'times-up' });
-          doSubmit(true);
+    const fetchExamData = async () => {
+      try {
+        const attempt = JSON.parse(storedAttempt);
+        const examId = attempt.exam?.id || attempt.examId;
+        
+        if (!examId) {
+          throw new Error("Missing exam ID in attempt data");
         }
+        
+        const [examRes, questionsRes, stateRes] = await Promise.all([
+          examsApi.getExam(examId),
+          examsApi.getQuestions(examId),
+          attemptsApi.getState(Number(attemptId))
+        ]);
+
+        setExamTitle(examRes.data.title);
+        setQuestions(questionsRes.data);
+        
+        // Map backend state to frontend answers map
+        const backendAnswers = stateRes.data.answers || {};
+        const mappedAnswers: AnswersMap = {};
+        Object.entries(backendAnswers).forEach(([qId, val]: [string, any]) => {
+          mappedAnswers[Number(qId)] = {
+            selectedOptions: Array.isArray(val) ? val : undefined,
+            selectedOption: !Array.isArray(val) ? val : undefined,
+          };
+        });
+        setAnswers(mappedAnswers);
+
+        // Timer setup
+        const durationSeconds = examRes.data.duration * 60;
+        const startedAt = new Date(stateRes.data.startedAt).getTime();
+        
+        const updateTimer = () => {
+          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+          const left = Math.max(0, durationSeconds - elapsed);
+          setRemainingSeconds(left);
+          
+          if (left === 0) {
+            doSubmit(true);
+          }
+        };
+
+        updateTimer();
+        const timerId = setInterval(updateTimer, 1000);
+
+        setSessionOk(true);
+        return () => clearInterval(timerId);
+      } catch (error) {
+        toast.error(t('errors.invalidExam'), { id: 'exam-invalid-exam' });
+        setSessionOk(false);
+        navigate('/login', { replace: true });
+      } finally {
+        setLoading(false);
       }
     };
 
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attemptId, loading, sessionOk, t]);
+    fetchExamData();
+  }, [attemptId, navigate, t]);
 
-  // Online/offline
-  useEffect(() => {
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
+  const handleSingleAnswerChange = async (optionId: string) => {
+    const q = questions[currentIndex];
+    if (!q) return;
 
-  // Anti-cheat: context menu + copy/paste/cut
-  useEffect(() => {
-    const logViolation = (type: string) => {
-      setViolationCount((prev) => {
-        const next = prev + 1;
+    try {
+      await attemptsApi.saveAnswer(Number(attemptId), q.id, optionId);
+      setAnswers((prev) => ({
+        ...prev,
+        [q.id]: { ...(prev[q.id] || {}), selectedOption: optionId },
+      }));
+    } catch (error) {
+      toast.error('Failed to save answer');
+    }
+  };
 
-        if (next === 1) {
-          toast.warning(t('exam.monitoringActive'), { id: 'monitoring-active' });
-        }
+  const handleMultiAnswerToggle = async (optionId: string) => {
+    const q = questions[currentIndex];
+    if (!q) return;
 
-        toast.warning(t('exam.noSwitchTabs'), { id: `no-switch-tabs-${type}` });
-        return next;
-      });
-    };
+    const existing = answers[q.id]?.selectedOptions ?? [];
+    const nextSelected = existing.includes(optionId)
+      ? existing.filter((x) => x !== optionId)
+      : [...existing, optionId];
 
-    const handleContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      logViolation('contextmenu');
-    };
-    const handleCopy = (e: ClipboardEvent) => {
-      e.preventDefault();
-      logViolation('copy');
-    };
-    const handlePaste = (e: ClipboardEvent) => {
-      e.preventDefault();
-      logViolation('paste');
-    };
-    const handleCut = (e: ClipboardEvent) => {
-      e.preventDefault();
-      logViolation('cut');
-    };
-
-    document.addEventListener('contextmenu', handleContextMenu);
-    document.addEventListener('copy', handleCopy);
-    document.addEventListener('paste', handlePaste);
-    document.addEventListener('cut', handleCut);
-
-    return () => {
-      document.removeEventListener('contextmenu', handleContextMenu);
-      document.removeEventListener('copy', handleCopy);
-      document.removeEventListener('paste', handlePaste);
-      document.removeEventListener('cut', handleCut);
-    };
-  }, [t]);
-
-  // Anti-cheat: tab/window switching (deduped)
-  useFocusViolation({
-    enabled: true,
-    cooldownMs: 1500,
-    onViolation: () => {
-      setViolationCount((prev) => {
-        const next = prev + 1;
-        if (next === 1) {
-          toast.warning(t('exam.monitoringActive'), { id: 'monitoring-active' });
-        }
-        toast.warning(t('exam.noSwitchTabs'), { id: 'no-switch-tabs' });
-        return next;
-      });
-    },
-  });
+    try {
+      // Assuming backend supports array for multi-select
+      await attemptsApi.saveAnswer(Number(attemptId), q.id, nextSelected as any);
+      setAnswers((prev) => ({
+        ...prev,
+        [q.id]: { ...(prev[q.id] || {}), selectedOptions: nextSelected },
+      }));
+    } catch (error) {
+      toast.error('Failed to save answer');
+    }
+  };
 
   const handleNavigate = (index: number) => {
     if (index >= 0 && index < questions.length) setCurrentIndex(index);
-  };
-
-  const handleSingleAnswerChange = (optionId: string) => {
-    const q = questions[currentIndex];
-    if (!q) return;
-
-    setAnswers((prev) => ({
-      ...prev,
-      [q.id]: { ...(prev[q.id] || {}), selectedOption: optionId },
-    }));
-  };
-
-  const handleMultiAnswerToggle = (optionId: string) => {
-    const q = questions[currentIndex];
-    if (!q) return;
-
-    setAnswers((prev) => {
-      const existing = prev[q.id]?.selectedOptions ?? [];
-      const nextSelected = existing.includes(optionId)
-        ? existing.filter((x) => x !== optionId)
-        : [...existing, optionId];
-
-      return {
-        ...prev,
-        [q.id]: { ...(prev[q.id] || {}), selectedOptions: nextSelected },
-      };
-    });
   };
 
   const handleMarkForReview = () => {
@@ -330,28 +226,21 @@ export function ExamPage() {
     doSubmit(false);
   };
 
-  const doSubmit = (auto: boolean) => {
+  const doSubmit = async (auto: boolean) => {
     if (!attemptId) return;
 
-    const result = {
-      attemptId,
-      examTitle,
-      submittedAt: new Date().toISOString(),
-      autoSubmitted: auto,
-      answers,
-      violationCount,
-      totalQuestions: questions.length,
-      answeredCount,
-    };
+    try {
+      await attemptsApi.submitAttempt(Number(attemptId));
+      localStorage.setItem(`completed_${attemptId}`, 'true');
 
-    localStorage.setItem(`result_${attemptId}`, JSON.stringify(result));
-    localStorage.setItem(`completed_${attemptId}`, 'true');
+      toast.success(auto ? t('exam.autoSubmitted') : t('exam.submitted'), {
+        id: auto ? 'exam-auto-submitted' : 'exam-submitted',
+      });
 
-    toast.success(auto ? t('exam.autoSubmitted') : t('exam.submitted'), {
-      id: auto ? 'exam-auto-submitted' : 'exam-submitted',
-    });
-
-    navigate(`/result/${attemptId}`, { replace: true });
+      navigate(`/result/${attemptId}`, { replace: true });
+    } catch (error) {
+      toast.error('Failed to submit exam');
+    }
   };
 
   if (loading) {
@@ -438,11 +327,19 @@ export function ExamPage() {
                     </Button>
                   </div>
 
-                  <h2 className="text-xl font-semibold">{currentQuestion.text}</h2>
+                  <h2 className="text-xl font-semibold whitespace-pre-wrap">
+                    {currentQuestion.title}
+                  </h2>
+
+                  {currentQuestion.description && (
+                    <p className="text-muted-foreground whitespace-pre-wrap">
+                      {currentQuestion.description.split('\\n').join('\n')}
+                    </p>
+                  )}
 
                   {currentQuestion.images?.length ? (
                     <div className="flex flex-wrap gap-3">
-                      {currentQuestion.images.map((src) => (
+                      {currentQuestion.images.map((src: string) => (
                         <button
                           key={src}
                           type="button"
@@ -456,7 +353,7 @@ export function ExamPage() {
                   ) : null}
 
                   <div className="space-y-3">
-                    {currentQuestion.options.map((option) => {
+                    {currentQuestion.options.map((option: { id: string; text: string }) => {
                       const isSelected = isMulti
                         ? selectedMulti.includes(option.id)
                         : selectedSingle === option.id;
@@ -518,7 +415,7 @@ export function ExamPage() {
                 <h3 className="font-semibold mb-4">{t('exam.navigation')}</h3>
 
                 <div className="grid grid-cols-5 gap-2">
-                  {questions.map((q, index) => {
+                  {questions.map((q: any, index: number) => {
                     const a = answers[q.id];
                     const qIsMulti = (q.type ?? 'single') === 'multi';
 

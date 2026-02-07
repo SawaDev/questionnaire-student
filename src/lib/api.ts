@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api';
 
 export const api = axios.create({
   baseURL: API_URL,
@@ -39,20 +39,24 @@ export const authApi = {
 export const examsApi = {
   getExam: (examId: number) => api.get(`/exams/${examId}`),
   getQuestions: (examId: number) => api.get(`/exams/${examId}/questions`),
+  getActiveExams: () => api.get('/exams/public/active'),
+  getAssignedStudents: (examId: string) => api.get(`/exams/${examId}/public/students`),
+  verifyOtp: (examId: string, studentId: number, otp: string) => 
+    api.post(`/exams/${examId}/verify-otp`, { studentId, otp }),
 };
 
 // Attempts API
 export const attemptsApi = {
-  startAttempt: (examId: number) => api.post('/attempts/start', { examId }),
-  getState: (attemptId: number) => api.get(`/attempts/${attemptId}/state`),
-  saveAnswer: (attemptId: number, questionId: number, selectedOption: string, isMarked?: boolean) =>
-    api.post(`/attempts/${attemptId}/answer`, { questionId, selectedOption, isMarked }),
-  submitAttempt: (attemptId: number) => api.post(`/attempts/${attemptId}/submit`),
+  startAttempt: (examId: number, studentId: number) => api.post('/exams/attempts/start', { examId, studentId }),
+  getState: (attemptId: number) => api.get(`/exams/attempts/${attemptId}/state`),
+  saveAnswer: (attemptId: number, questionId: number, selectedOption: any) =>
+    api.post(`/exams/attempts/${attemptId}/answer`, { questionId, selectedOption }),
+  submitAttempt: (attemptId: number) => api.post(`/exams/attempts/${attemptId}/submit`),
   logFocusEvent: (attemptId: number, eventType: string) =>
-    api.post(`/attempts/${attemptId}/focus-log`, { eventType }),
+    api.post(`/exams/attempts/${attemptId}/focus-log`, { eventType }),
 };
 
 // Results API
 export const resultsApi = {
-  getResult: (attemptId: number) => api.get(`/results/${attemptId}`),
+  getResult: (attemptId: number) => api.get(`/exams/results/${attemptId}`),
 };

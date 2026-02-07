@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { resultsApi, examsApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -10,7 +11,6 @@ import {
 } from '@/components/ui/card';
 import { CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
-import { mockQuestions } from '@/lib/mockExam';
 import { useTranslation } from 'react-i18next';
 
 type AnswerState = {
@@ -23,9 +23,9 @@ type AnswersMap = Record<number, AnswerState>;
 interface ReviewAnswer {
   questionId: number;
   text: string;
+  description?: string;
   options: Array<{ id: string; text: string }>;
   type: 'single' | 'multi';
-  correctOptionIds: string[];
   selectedOptionIds: string[];
   isCorrect: boolean;
   points: number;
@@ -35,25 +35,6 @@ interface ReviewAnswer {
 
 const NO_RESULT_TOAST_ID = 'no-result-found';
 const FAILED_LOAD_TOAST_ID = 'result-failed-load';
-
-function gradeFromPercentage(p: number) {
-  if (p >= 90) return 'A';
-  if (p >= 80) return 'B';
-  if (p >= 70) return 'C';
-  if (p >= 60) return 'D';
-  return 'F';
-}
-
-// ✅ strict: ALL correct selected and no extras
-function isMultiCorrect(selected: string[], correct: string[]) {
-  const s = [...selected].sort();
-  const c = [...correct].sort();
-  if (s.length !== c.length) return false;
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] !== c[i]) return false;
-  }
-  return true;
-}
 
 export function ResultPage() {
   const { t } = useTranslation();
@@ -65,6 +46,7 @@ export function ResultPage() {
     examTitle: string;
     score: number;
     totalPoints: number;
+    grade: string;
     submittedAt?: string;
     violationCount?: number;
   } | null>(null);
@@ -73,110 +55,75 @@ export function ResultPage() {
 
   useEffect(() => {
     if (!attemptId) {
-      // ✅ avoid double toasts in dev StrictMode
       toast.dismiss(NO_RESULT_TOAST_ID);
       toast.dismiss(FAILED_LOAD_TOAST_ID);
       navigate('/login', { replace: true });
       return;
     }
 
-    // ✅ If logged out (no session), don't even try to show errors/toasts
-    // Prevents: user logs out -> presses Back -> old /result/:id mounts -> toasts appear
-    const hasSession = !!localStorage.getItem('currentExam') && !!localStorage.getItem('currentAttempt');
-    if (!hasSession) {
-      toast.dismiss(NO_RESULT_TOAST_ID);
-      toast.dismiss(FAILED_LOAD_TOAST_ID);
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    try {
-      const rawResult = localStorage.getItem(`result_${attemptId}`);
-
-      if (!rawResult) {
-        // ✅ only one toast (id) + also dismiss first to be safe in StrictMode
-        toast.dismiss(NO_RESULT_TOAST_ID);
-        toast.error(t('result.noResult'), { id: NO_RESULT_TOAST_ID });
-        navigate('/login', { replace: true });
-        return;
-      }
-
-      const stored = JSON.parse(rawResult);
-
-      let answersMap: AnswersMap = {};
+    const fetchResult = async () => {
       try {
-        const rawAnswers = localStorage.getItem(`answers_${attemptId}`);
-        if (rawAnswers) answersMap = JSON.parse(rawAnswers);
-      } catch {
-        // ignore
+        const resultRes = await resultsApi.getResult(Number(attemptId));
+        const resultData = resultRes.data;
+        
+        // Fetch exam and questions to build review
+        const examRes = await examsApi.getExam(resultData.exam.id);
+        const questionsRes = await examsApi.getQuestions(resultData.exam.id);
+        const questions = questionsRes.data;
+
+        const review: ReviewAnswer[] = questions.map((q: any) => {
+          const qResult = resultData.questionResults?.find((r: any) => r.questionId === q.id);
+          const isCorrect = qResult ? qResult.isCorrect : false;
+          
+          const studentAnswer = resultData.answers?.[q.id];
+          const selectedOptionIds = Array.isArray(studentAnswer) 
+            ? studentAnswer.map(String)
+            : studentAnswer !== undefined && studentAnswer !== null ? [String(studentAnswer)] : [];
+
+          return {
+            questionId: q.id,
+            text: q.title,
+            description: q.description,
+            options: q.options.map((o: any) => ({ id: String(o.id), text: o.text })),
+            type: q.options.filter((o: any) => o.is_correct).length > 1 ? 'multi' : 'single',
+            correctOptionIds: [], // We don't need this anymore as we use isCorrect from backend
+            selectedOptionIds,
+            isCorrect,
+            points: q.points || 1,
+            isMarked: false,
+            images: q.assets || [],
+          };
+        });
+
+        const totalPoints = review.reduce((sum, a) => sum + a.points, 0);
+        const score = resultData.score;
+
+        setAnswers(review);
+        setResultMeta({
+          examTitle: examRes.data.title,
+          score,
+          totalPoints,
+          grade: resultData.grade,
+          submittedAt: resultData.finishedAt,
+          violationCount: 0, // violation count not persisted in backend yet
+        });
+      } catch (error) {
+        toast.dismiss(FAILED_LOAD_TOAST_ID);
+        toast.error(t('result.failedLoad'), { id: FAILED_LOAD_TOAST_ID });
+        navigate('/login', { replace: true });
+      } finally {
+        setLoading(false);
       }
+    };
 
-      const examTitle = stored?.examTitle || t('dashboard.mockExamTitle');
-      const submittedAt = stored?.submittedAt;
-      const violationCount = stored?.violationCount ?? 0;
-
-      const review: ReviewAnswer[] = mockQuestions.map((q) => {
-        const type = (q.type ?? 'single') as 'single' | 'multi';
-
-        const correctOptionIds =
-          type === 'multi'
-            ? (q.correctOptionIds ?? [])
-            : q.correctOptionId
-            ? [q.correctOptionId]
-            : [];
-
-        const selectedOptionIds =
-          type === 'multi'
-            ? (answersMap[q.id]?.selectedOptions ?? [])
-            : answersMap[q.id]?.selectedOption
-            ? [answersMap[q.id]!.selectedOption!]
-            : [];
-
-        const isCorrect =
-          type === 'multi'
-            ? isMultiCorrect(selectedOptionIds, correctOptionIds)
-            : selectedOptionIds.length === 1 &&
-              correctOptionIds.length === 1 &&
-              selectedOptionIds[0] === correctOptionIds[0];
-
-        return {
-          questionId: q.id,
-          text: q.text,
-          options: q.options,
-          type,
-          correctOptionIds,
-          selectedOptionIds,
-          isCorrect,
-          points: 1,
-          isMarked: !!answersMap[q.id]?.isMarked,
-          images: q.images,
-        };
-      });
-
-      const totalPoints = review.reduce((sum, a) => sum + a.points, 0);
-      const score = review.reduce((sum, a) => sum + (a.isCorrect ? a.points : 0), 0);
-
-      setAnswers(review);
-      setResultMeta({ examTitle, score, totalPoints, submittedAt, violationCount });
-    } catch {
-      toast.dismiss(FAILED_LOAD_TOAST_ID);
-      toast.error(t('result.failedLoad'), { id: FAILED_LOAD_TOAST_ID });
-      navigate('/login', { replace: true });
-    } finally {
-      setLoading(false);
-    }
+    fetchResult();
   }, [attemptId, navigate, t]);
 
   const handleLogout = () => {
-    // ✅ clear session keys so Back can't reopen exam/result
     localStorage.removeItem('currentAttempt');
-    localStorage.removeItem('currentExam');
-
-    // optional auth keys
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-
-    // ✅ also dismiss any toasts from result page
+    localStorage.removeItem('current_exam_id');
+    localStorage.removeItem('student_user');
+    
     toast.dismiss(NO_RESULT_TOAST_ID);
     toast.dismiss(FAILED_LOAD_TOAST_ID);
 
@@ -197,7 +144,7 @@ export function ResultPage() {
   if (!resultMeta) return null;
 
   const percentage = Math.round((resultMeta.score / resultMeta.totalPoints) * 100);
-  const grade = gradeFromPercentage(percentage);
+  const grade = resultMeta.grade;
 
   // ✅ 24-hour format
   const submittedAtText = resultMeta.submittedAt
@@ -310,7 +257,12 @@ export function ResultPage() {
                       </span>
                     </div>
 
-                    <p className="font-medium mb-3">{answer.text}</p>
+                    <p className="font-medium mb-1 whitespace-pre-wrap">{answer.text}</p>
+                    {answer.description && (
+                      <p className="text-sm text-muted-foreground mb-3 whitespace-pre-wrap">
+                        {answer.description.split('\\n').join('\n')}
+                      </p>
+                    )}
 
                     {answer.type === 'multi' && (
                       <p className="text-xs text-muted-foreground">
@@ -322,26 +274,42 @@ export function ResultPage() {
 
                 <div className="space-y-2 ml-8">
                   {answer.options.map((option) => {
-                    const isCorrect = answer.correctOptionIds.includes(option.id);
                     const isSelected = answer.selectedOptionIds.includes(option.id);
 
                     let bgColor = 'bg-background';
-                    if (isCorrect) bgColor = 'bg-green-100 dark:bg-green-900';
-                    if (isSelected && !isCorrect) bgColor = 'bg-destructive/20';
+                    let borderColor = 'border-border';
+                    let showCheck = false;
+                    let showX = false;
+
+                    if (answer.isCorrect) {
+                      if (isSelected) {
+                        bgColor = 'bg-green-100 dark:bg-green-900';
+                        borderColor = 'border-green-500';
+                        showCheck = true;
+                      }
+                    } else {
+                      if (isSelected) {
+                        bgColor = 'bg-destructive/20';
+                        borderColor = 'border-destructive';
+                        showX = true;
+                      }
+                    }
 
                     return (
                       <div
                         key={option.id}
-                        className={`p-3 rounded border ${bgColor} ${isCorrect ? 'border-green-500' : ''}`}
+                        className={`p-3 rounded border ${bgColor} ${borderColor}`}
                       >
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">{option.id}.</span>
+                          <span className="font-medium">
+                            {String.fromCharCode(65 + answer.options.indexOf(option))}.
+                          </span>
                           <span>{option.text}</span>
 
-                          {isCorrect && (
+                          {showCheck && (
                             <CheckCircle2 className="h-4 w-4 text-green-600 ml-auto" />
                           )}
-                          {isSelected && !isCorrect && (
+                          {showX && (
                             <XCircle className="h-4 w-4 text-destructive ml-auto" />
                           )}
                         </div>

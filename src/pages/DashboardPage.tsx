@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -11,12 +11,15 @@ import {
 import { toast } from 'sonner';
 import { Clock, FileText, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { examsApi, attemptsApi } from '@/lib/api';
+import { useAuth } from '@/hooks/useAuth';
 
 const NO_EXAM_TOAST_ID = 'dashboard-no-exam';
 const INVALID_EXAM_TOAST_ID = 'dashboard-invalid-exam';
 
 export function DashboardPage() {
   const { t } = useTranslation();
+  const { user } = useAuth();
 
   const [exam, setExam] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -53,66 +56,50 @@ export function DashboardPage() {
     };
   }, [navigate, location.pathname]);
 
-  useEffect(() => {
-    if (didInitRef.current) return;
-    didInitRef.current = true;
-
-    const storedExam = localStorage.getItem('currentExam');
-    if (!storedExam) {
-      toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
-      navigate('/login', { replace: true });
-      return;
-    }
-
+  const fetchExamDetails = useCallback(async (examId: string) => {
+    setLoading(true);
     try {
-      const examData = JSON.parse(storedExam);
-      setExam(examData);
-    } catch {
+      const response = await examsApi.getExam(Number(examId));
+      setExam(response.data);
+    } catch (error) {
       toast.error(t('errors.invalidExam'), { id: INVALID_EXAM_TOAST_ID });
       navigate('/login', { replace: true });
-      return;
     } finally {
       setLoading(false);
     }
   }, [navigate, t]);
 
+  useEffect(() => {
+    const examId = localStorage.getItem('current_exam_id');
+    if (!examId) {
+      if (!loading) {
+        toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
+        navigate('/login', { replace: true });
+      }
+      return;
+    }
+
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+
+    fetchExamDetails(examId);
+  }, [fetchExamDetails, navigate, t, loading]);
+
   const handleStartExam = async () => {
-    if (!exam) return;
+    if (!exam || !user) return;
 
     setStarting(true);
 
     try {
-      const attemptId = crypto.randomUUID();
+      const response = await attemptsApi.startAttempt(exam.id, user.id);
+      const attempt = response.data;
 
-      const durationMinutes =
-        typeof exam?.duration_seconds === 'number'
-          ? Math.floor(exam.duration_seconds / 60)
-          : typeof exam?.durationMinutes === 'number'
-          ? exam.durationMinutes
-          : 60;
-
-      const questionCount =
-        typeof exam?.question_count === 'number'
-          ? exam.question_count
-          : typeof exam?.totalQuestions === 'number'
-          ? exam.totalQuestions
-          : 9;
-
-      const attemptData = {
-        attemptId,
-        examId: exam.id ?? 1,
-        examTitle: exam.title ?? t('dashboard.mockExamTitle'),
-        durationMinutes,
-        totalQuestions: questionCount,
-        startedAt: new Date().toISOString(),
-      };
-
-      localStorage.setItem('currentAttempt', JSON.stringify(attemptData));
+      localStorage.setItem('currentAttempt', JSON.stringify(attempt));
 
       // ✅ replace so dashboard isn't reachable by browser back during exam
-      navigate(`/exam/${attemptId}`, { replace: true });
+      navigate(`/exam/${attempt.id}`, { replace: true });
     } catch (error: any) {
-      toast.error(error?.message || t('errors.startExamFailed'), { id: 'start-exam-failed' });
+      toast.error(error?.response?.data?.message || t('errors.startExamFailed'), { id: 'start-exam-failed' });
     } finally {
       setStarting(false);
     }
@@ -132,18 +119,22 @@ export function DashboardPage() {
   if (!exam) return null;
 
   const durationMinutes =
-    typeof exam?.duration_seconds === 'number'
-      ? Math.floor(exam.duration_seconds / 60)
-      : typeof exam?.durationMinutes === 'number'
-      ? exam.durationMinutes
-      : 60;
+    typeof exam?.duration === 'number'
+      ? exam.duration
+      : typeof exam?.duration_seconds === 'number'
+        ? Math.floor(exam.duration_seconds / 60)
+        : typeof exam?.durationMinutes === 'number'
+          ? exam.durationMinutes
+          : 60;
 
   const questionCount =
-    typeof exam?.question_count === 'number'
-      ? exam.question_count
-      : typeof exam?.totalQuestions === 'number'
-      ? exam.totalQuestions
-      : 9;
+    Array.isArray(exam?.questions)
+      ? exam.questions.length
+      : typeof exam?.question_count === 'number'
+        ? exam.question_count
+        : typeof exam?.totalQuestions === 'number'
+          ? exam.totalQuestions
+          : 0;
 
   return (
     <div className="min-h-screen p-4 sm:p-6 lg:p-8">
@@ -151,7 +142,9 @@ export function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-2xl">{exam.title ?? t('dashboard.mockExamTitle')}</CardTitle>
-            <CardDescription>{t('dashboard.title')}</CardDescription>
+            <CardDescription className="whitespace-pre-wrap">
+              {exam.description?.split('\\n').join('\n') || t('dashboard.title')}
+            </CardDescription>
           </CardHeader>
 
           <CardContent className="space-y-6">
