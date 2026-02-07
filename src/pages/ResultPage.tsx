@@ -13,13 +13,6 @@ import { CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
-type AnswerState = {
-  selectedOption?: string; // single
-  selectedOptions?: string[]; // multi
-  isMarked?: boolean;
-};
-type AnswersMap = Record<number, AnswerState>;
-
 interface ReviewAnswer {
   questionId: number;
   text: string;

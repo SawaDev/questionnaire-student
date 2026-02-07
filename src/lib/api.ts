@@ -49,8 +49,8 @@ export const examsApi = {
 export const attemptsApi = {
   startAttempt: (examId: number, studentId: number) => api.post('/exams/attempts/start', { examId, studentId }),
   getState: (attemptId: number) => api.get(`/exams/attempts/${attemptId}/state`),
-  saveAnswer: (attemptId: number, questionId: number, selectedOption: any) =>
-    api.post(`/exams/attempts/${attemptId}/answer`, { questionId, selectedOption }),
+  saveAnswer: (attemptId: number, questionId: number, selectedOption: any, isMarked?: boolean) =>
+    api.post(`/exams/attempts/${attemptId}/answer`, { questionId, selectedOption, isMarked }),
   submitAttempt: (attemptId: number) => api.post(`/exams/attempts/${attemptId}/submit`),
   logFocusEvent: (attemptId: number, eventType: string) =>
     api.post(`/exams/attempts/${attemptId}/focus-log`, { eventType }),

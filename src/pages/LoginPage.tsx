@@ -84,7 +84,7 @@ export function LoginPage() {
 
     setLoading(true);
     try {
-      const response = await login(examId, Number(studentId), otp);
+      await login(examId, Number(studentId), otp);
       toast.success(t('login.success'));
 
       // Ensure the user state is updated before navigating

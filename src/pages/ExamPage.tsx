@@ -42,7 +42,6 @@ export function ExamPage() {
   const [showSubmitDialog, setShowSubmitDialog] = useState(false);
 
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [violationCount, setViolationCount] = useState(0);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
