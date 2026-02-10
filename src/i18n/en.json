@@ -51,7 +51,10 @@
     "timesUpAutoSubmitting": "Time's up. Auto-submitting...",
     "autoSubmitted": "Auto-submitted (mock)",
     "submitted": "Exam submitted (mock)",
-    "noBackDuringExam": "You can’t go back during the exam."
+    "backDisabled": "Back navigation is disabled during the exam.",
+    "copyDisabled": "Copying and pasting is disabled for security reasons.",
+    "inspectDisabled": "Developer tools are disabled during the exam.",
+    "violationWarning": "Warning: Tab switching detected ({{count}}). This violation is being recorded."
   },
   "login": {
     "title": "Student Exam Portal",
@@ -69,7 +72,9 @@
     "loggingIn": "Logging in...",
     "fillAll": "Please fill in all fields",
     "success": "Login successful",
-    "failed": "Login failed"
+    "failed": "Login failed",
+    "student": "Student",
+    "otp": "Enter 6-digit OTP"
   },
   "result": {
     "loading": "Loading results...",

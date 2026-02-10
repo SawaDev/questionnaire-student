@@ -14,6 +14,8 @@ import {
 import { toast } from 'sonner';
 import { CheckCircle2, Wifi, WifiOff, Flag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { formatNewTab } from '@/lib/utils';
+import alertSound from '@/assets/alert.ogg';
 
 type AnswerState = {
   selectedOption?: string; // single
@@ -60,6 +62,87 @@ export function ExamPage() {
 
   const [openImage, setOpenImage] = useState<string | null>(null);
   const [sessionOk, setSessionOk] = useState(false);
+  const [, setViolationCount] = useState(0);
+
+  const currentQuestion = questions[currentIndex];
+
+  // ✅ Anti-cheat: Prevent back navigation, copy/paste, and inspect element
+  useEffect(() => {
+    if (!sessionOk) return;
+
+    // 1. Prevent Back Navigation
+    window.history.pushState(null, '', window.location.href);
+    const onPopState = () => {
+      window.history.pushState(null, '', window.location.href);
+      toast.error(t('exam.backDisabled'), { id: 'anti-cheat-back' });
+    };
+
+    // 2. Prevent Copy/Cut/Paste
+    const onCopyPaste = (e: Event) => {
+      e.preventDefault();
+      toast.error(t('exam.copyDisabled'), { id: 'anti-cheat-copy' });
+      attemptsApi.recordViolation(Number(attemptId), 'COPY_PASTE').catch(console.error);
+    };
+
+    // 3. Prevent Right Click (Context Menu)
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      attemptsApi.recordViolation(Number(attemptId), 'CONTEXT_MENU').catch(console.error);
+    };
+
+    // 4. Prevent Inspect Element Shortcuts
+    const onKeyDown = (e: KeyboardEvent) => {
+      // F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U, Ctrl+Shift+C
+      if (
+        e.key === 'F12' ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'I' || e.key === 'J' || e.key === 'C')) ||
+        ((e.ctrlKey || e.metaKey) && e.key === 'u')
+      ) {
+        e.preventDefault();
+        toast.error(t('exam.inspectDisabled'), { id: 'anti-cheat-inspect' });
+        attemptsApi.recordViolation(Number(attemptId), 'DEV_TOOLS').catch(console.error);
+      }
+    };
+
+    // 5. Detect Tab Switching (Violations)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        const type = 'TAB_SWITCH';
+        
+        // Play alert sound
+        const audio = new Audio(alertSound);
+        audio.play().catch(e => console.error('Failed to play alert sound:', e));
+
+        setViolationCount((prev) => {
+          const next = prev + 1;
+          toast.warning(t('exam.violationWarning', { count: next }), { id: 'anti-cheat-violation' });
+          
+          // Send to backend
+          attemptsApi.recordViolation(Number(attemptId), type).catch(console.error);
+          
+          return next;
+        });
+      }
+    };
+
+    window.addEventListener('popstate', onPopState);
+    window.addEventListener('copy', onCopyPaste);
+    window.addEventListener('cut', onCopyPaste);
+    window.addEventListener('paste', onCopyPaste);
+    window.addEventListener('contextmenu', onContextMenu);
+    window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('copy', onCopyPaste);
+      window.removeEventListener('cut', onCopyPaste);
+      window.removeEventListener('paste', onCopyPaste);
+      window.removeEventListener('contextmenu', onContextMenu);
+      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [sessionOk, t]);
 
   // ✅ StrictMode guards
   const didInitRef = useRef(false);
@@ -98,7 +181,7 @@ export function ExamPage() {
         
         const [examRes, questionsRes, stateRes] = await Promise.all([
           examsApi.getExam(examId),
-          examsApi.getQuestions(examId),
+          examsApi.getQuestions(examId, Number(attemptId)),
           attemptsApi.getState(Number(attemptId))
         ]);
 
@@ -187,16 +270,6 @@ export function ExamPage() {
     if (index >= 0 && index < questions.length) setCurrentIndex(index);
   };
 
-  const handleMarkForReview = () => {
-    const q = questions[currentIndex];
-    if (!q) return;
-
-    setAnswers((prev) => ({
-      ...prev,
-      [q.id]: { ...(prev[q.id] || {}), isMarked: !(prev[q.id]?.isMarked ?? false) },
-    }));
-  };
-
   const answeredCount = questions.filter((q) => {
     const a = answers[q.id];
     const isMulti = (q.type ?? 'single') === 'multi';
@@ -265,7 +338,6 @@ export function ExamPage() {
     return null;
   }
 
-  const currentQuestion = questions[currentIndex];
   const currentAnswer = currentQuestion ? answers[currentQuestion.id] : null;
 
   const unansweredNotFlaggedCount = questions.filter((q) => {
@@ -320,10 +392,6 @@ export function ExamPage() {
                     <span className="text-sm text-muted-foreground">
                       {t('exam.questionOf', { current: currentIndex + 1, total: questions.length })}
                     </span>
-
-                    <Button variant="outline" size="sm" onClick={handleMarkForReview}>
-                      {currentAnswer?.isMarked ? t('exam.unmark') : t('exam.mark')} {t('exam.forReview')}
-                    </Button>
                   </div>
 
                   <h2 className="text-xl font-semibold whitespace-pre-wrap">
@@ -332,7 +400,7 @@ export function ExamPage() {
 
                   {currentQuestion.description && (
                     <p className="text-muted-foreground whitespace-pre-wrap">
-                      {currentQuestion.description.split('\\n').join('\n')}
+                      {formatNewTab(currentQuestion.description)}
                     </p>
                   )}
 
@@ -379,8 +447,7 @@ export function ExamPage() {
                               {isSelected && <CheckCircle2 className="h-3 w-3 text-primary-foreground" />}
                             </div>
 
-                            <span className="font-medium">{option.id}.</span>
-                            <span>{option.text}</span>
+                            <span className="whitespace-pre-wrap">{formatNewTab(option.text)}</span>
                           </div>
                         </button>
                       );
@@ -457,12 +524,6 @@ export function ExamPage() {
                     <span>{t('exam.answered')}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 rounded bg-orange-500 flex items-center justify-center">
-                      <Flag className="h-3 w-3 text-white" />
-                    </div>
-                    <span>{t('exam.marked')}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
                     <div className="w-4 h-4 rounded bg-yellow-500" />
                     <span>{t('exam.current')}</span>
                   </div>
@@ -475,7 +536,7 @@ export function ExamPage() {
 
                   {unansweredNotFlaggedCount > 0 && (
                     <p className="text-xs text-muted-foreground mt-1">
-                      {unansweredNotFlaggedCount} unanswered (not flagged)
+                      {unansweredNotFlaggedCount} unanswered
                     </p>
                   )}
                 </div>

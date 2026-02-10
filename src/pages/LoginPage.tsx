@@ -38,6 +38,8 @@ export function LoginPage() {
   const [examsLoading, setExamsLoading] = useState(true);
   const [studentsLoading, setStudentsLoading] = useState(false);
 
+  const [ip, setIp] = useState<string>('');
+
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -53,6 +55,15 @@ export function LoginPage() {
       }
     };
     fetchExams();
+
+    // Log current IP (note: this will be the client's public IP as seen by a third-party service)
+    fetch('https://api.ipify.org?format=json')
+      .then(res => res.json())
+      .then(data => {
+        console.log('Current Client IP:', data.ip);
+        setIp(data.ip);
+      })
+      .catch(() => console.log('Could not fetch public IP for logging'));
   }, []);
 
   useEffect(() => {
@@ -84,7 +95,7 @@ export function LoginPage() {
 
     setLoading(true);
     try {
-      await login(examId, Number(studentId), otp);
+      await login(examId, Number(studentId), otp, ip);
       toast.success(t('login.success'));
 
       // Ensure the user state is updated before navigating
@@ -175,7 +186,7 @@ export function LoginPage() {
                 <Input
                   id="otp"
                   type="text"
-                  placeholder="Enter 6-digit OTP"
+                  placeholder={t('login.otp') || 'Enter 6-digit OTP'}
                   value={otp}
                   onChange={(e) => setOtp(e.target.value)}
                   required

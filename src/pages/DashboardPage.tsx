@@ -13,6 +13,7 @@ import { Clock, FileText, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { examsApi, attemptsApi } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
+import { formatNewTab } from '@/lib/utils';
 
 const NO_EXAM_TOAST_ID = 'dashboard-no-exam';
 const INVALID_EXAM_TOAST_ID = 'dashboard-invalid-exam';
@@ -143,7 +144,7 @@ export function DashboardPage() {
           <CardHeader>
             <CardTitle className="text-2xl">{exam.title ?? t('dashboard.mockExamTitle')}</CardTitle>
             <CardDescription className="whitespace-pre-wrap">
-              {exam.description?.split('\\n').join('\n') || t('dashboard.title')}
+              {formatNewTab(exam.description) || t('dashboard.title')}
             </CardDescription>
           </CardHeader>
 

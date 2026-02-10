@@ -38,11 +38,12 @@ export const authApi = {
 // Exams API
 export const examsApi = {
   getExam: (examId: number) => api.get(`/exams/${examId}`),
-  getQuestions: (examId: number) => api.get(`/exams/${examId}/questions`),
+  getQuestions: (examId: number, attemptId?: number) => 
+    api.get(`/exams/${examId}/questions`, { params: { attemptId } }),
   getActiveExams: () => api.get('/exams/public/active'),
   getAssignedStudents: (examId: string) => api.get(`/exams/${examId}/public/students`),
-  verifyOtp: (examId: string, studentId: number, otp: string) => 
-    api.post(`/exams/${examId}/verify-otp`, { studentId, otp }),
+  verifyOtp: (examId: string, studentId: number, otp: string, clientIp?: string) => 
+    api.post(`/exams/${examId}/verify-otp`, { studentId, otp, clientIp }),
 };
 
 // Attempts API
@@ -52,8 +53,8 @@ export const attemptsApi = {
   saveAnswer: (attemptId: number, questionId: number, selectedOption: any, isMarked?: boolean) =>
     api.post(`/exams/attempts/${attemptId}/answer`, { questionId, selectedOption, isMarked }),
   submitAttempt: (attemptId: number) => api.post(`/exams/attempts/${attemptId}/submit`),
-  logFocusEvent: (attemptId: number, eventType: string) =>
-    api.post(`/exams/attempts/${attemptId}/focus-log`, { eventType }),
+  recordViolation: (attemptId: number, type: string) =>
+    api.post(`/exams/attempts/${attemptId}/violation`, { type }),
 };
 
 // Results API

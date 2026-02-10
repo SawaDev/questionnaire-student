@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { resultsApi, examsApi } from '@/lib/api';
+import { resultsApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -12,12 +12,13 @@ import {
 import { CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
+import { formatNewTab } from '@/lib/utils';
 
 interface ReviewAnswer {
   questionId: number;
   text: string;
   description?: string;
-  options: Array<{ id: string; text: string }>;
+  options: Array<{ id: string; text: string; is_correct?: boolean }>;
   type: 'single' | 'multi';
   selectedOptionIds: string[];
   isCorrect: boolean;
@@ -58,18 +59,17 @@ export function ResultPage() {
       try {
         const resultRes = await resultsApi.getResult(Number(attemptId));
         const resultData = resultRes.data;
-        
-        // Fetch exam and questions to build review
-        const examRes = await examsApi.getExam(resultData.exam.id);
-        const questionsRes = await examsApi.getQuestions(resultData.exam.id);
-        const questions = questionsRes.data;
+
+        // Use the exam and questions from the backend result (which now includes snapshots)
+        const exam = resultData.exam;
+        const questions = exam.questions || [];
 
         const review: ReviewAnswer[] = questions.map((q: any) => {
           const qResult = resultData.questionResults?.find((r: any) => r.questionId === q.id);
           const isCorrect = qResult ? qResult.isCorrect : false;
-          
+
           const studentAnswer = resultData.answers?.[q.id];
-          const selectedOptionIds = Array.isArray(studentAnswer) 
+          const selectedOptionIds = Array.isArray(studentAnswer)
             ? studentAnswer.map(String)
             : studentAnswer !== undefined && studentAnswer !== null ? [String(studentAnswer)] : [];
 
@@ -77,9 +77,13 @@ export function ResultPage() {
             questionId: q.id,
             text: q.title,
             description: q.description,
-            options: q.options.map((o: any) => ({ id: String(o.id), text: o.text })),
+            options: q.options.map((o: any) => ({ 
+              id: String(o.id), 
+              text: o.text,
+              is_correct: o.is_correct // Ensure this is passed through
+            })),
             type: q.options.filter((o: any) => o.is_correct).length > 1 ? 'multi' : 'single',
-            correctOptionIds: [], // We don't need this anymore as we use isCorrect from backend
+            correctOptionIds: [],
             selectedOptionIds,
             isCorrect,
             points: q.points || 1,
@@ -93,12 +97,12 @@ export function ResultPage() {
 
         setAnswers(review);
         setResultMeta({
-          examTitle: examRes.data.title,
+          examTitle: exam.title,
           score,
           totalPoints,
           grade: resultData.grade,
           submittedAt: resultData.finishedAt,
-          violationCount: 0, // violation count not persisted in backend yet
+          violationCount: resultData.violations?.length || 0,
         });
       } catch (error) {
         toast.dismiss(FAILED_LOAD_TOAST_ID);
@@ -116,7 +120,7 @@ export function ResultPage() {
     localStorage.removeItem('currentAttempt');
     localStorage.removeItem('current_exam_id');
     localStorage.removeItem('student_user');
-    
+
     toast.dismiss(NO_RESULT_TOAST_ID);
     toast.dismiss(FAILED_LOAD_TOAST_ID);
 
@@ -142,14 +146,14 @@ export function ResultPage() {
   // ✅ 24-hour format
   const submittedAtText = resultMeta.submittedAt
     ? new Date(resultMeta.submittedAt).toLocaleString(undefined, {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      })
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
     : '-';
 
   return (
@@ -189,18 +193,6 @@ export function ResultPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="p-4 bg-muted rounded-lg">
-                <p className="text-sm text-muted-foreground">{t('result.violations')}</p>
-                <p className="text-xl font-semibold">{resultMeta.violationCount ?? 0}</p>
-              </div>
-
-              <div className="p-4 bg-muted rounded-lg">
-                <p className="text-sm text-muted-foreground">{t('result.notes')}</p>
-                <p className="text-sm text-muted-foreground">{t('result.mockNote')}</p>
-              </div>
-            </div>
-
             <div className="pt-4 border-t">
               <Button onClick={handleLogout} className="w-full sm:w-auto">
                 {t('result.logout')}
@@ -220,11 +212,10 @@ export function ResultPage() {
             {answers.map((answer, index) => (
               <div
                 key={answer.questionId}
-                className={`p-4 rounded-lg border-2 ${
-                  answer.isCorrect
+                className={`p-4 rounded-lg border-2 ${answer.isCorrect
                     ? 'border-green-500 bg-green-50 dark:bg-green-950'
                     : 'border-destructive bg-destructive/10'
-                }`}
+                  }`}
               >
                 <div className="flex items-start gap-3 mb-3">
                   {answer.isCorrect ? (
@@ -253,7 +244,7 @@ export function ResultPage() {
                     <p className="font-medium mb-1 whitespace-pre-wrap">{answer.text}</p>
                     {answer.description && (
                       <p className="text-sm text-muted-foreground mb-3 whitespace-pre-wrap">
-                        {answer.description.split('\\n').join('\n')}
+                        {formatNewTab(answer.description)}
                       </p>
                     )}
 
@@ -266,27 +257,26 @@ export function ResultPage() {
                 </div>
 
                 <div className="space-y-2 ml-8">
-                  {answer.options.map((option) => {
-                    const isSelected = answer.selectedOptionIds.includes(option.id);
+                    {answer.options.map((option: any) => {
+                      const isSelected = answer.selectedOptionIds.includes(String(option.id));
+                      const isCorrect = option.is_correct;
 
-                    let bgColor = 'bg-background';
-                    let borderColor = 'border-border';
-                    let showCheck = false;
-                    let showX = false;
+                      let bgColor = 'bg-background';
+                      let borderColor = 'border-border';
+                      let showCheck = false;
+                      let showX = false;
 
-                    if (answer.isCorrect) {
-                      if (isSelected) {
-                        bgColor = 'bg-green-100 dark:bg-green-900';
-                        borderColor = 'border-green-500';
-                        showCheck = true;
-                      }
-                    } else {
-                      if (isSelected) {
-                        bgColor = 'bg-destructive/20';
+                      if (isCorrect) {
+                        if (isSelected) {
+                          bgColor = 'bg-green-100 dark:bg-green-900/30';
+                          borderColor = 'border-green-500';
+                          showCheck = true;
+                        }
+                      } else if (isSelected) {
+                        bgColor = 'bg-destructive/10';
                         borderColor = 'border-destructive';
                         showX = true;
                       }
-                    }
 
                     return (
                       <div
@@ -297,7 +287,7 @@ export function ResultPage() {
                           <span className="font-medium">
                             {String.fromCharCode(65 + answer.options.indexOf(option))}.
                           </span>
-                          <span>{option.text}</span>
+                          <span className="whitespace-pre-wrap">{formatNewTab(option.text)}</span>
 
                           {showCheck && (
                             <CheckCircle2 className="h-4 w-4 text-green-600 ml-auto" />

@@ -10,7 +10,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (examId: string, studentId: number, otp: string) => Promise<any>;
+  login: (examId: string, studentId: number, otp: string, clientIp?: string) => Promise<any>;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
 }
@@ -44,8 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactNode {
     checkAuth();
   }, []);
 
-  const login = async (examId: string, studentId: number, otp: string) => {
-    const response = await examsApi.verifyOtp(examId, studentId, otp);
+  const login = async (examId: string, studentId: number, otp: string, clientIp?: string) => {
+    const response = await examsApi.verifyOtp(examId, studentId, otp, clientIp);
     
     if (response.data.success) {
       const studentUser: User = {

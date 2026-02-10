@@ -16,7 +16,7 @@
     "duration": "Davomiyligi",
     "minutes": "{{count}} daqiqa",
     "questions": "Savollar",
-    "questionsCount": "{{count}} ta savol",
+    "questionsCount": "25 ta savol",
     "instructions": "Ko‘rsatmalar",
     "rulesTitle": "Muhim qoidalar:",
     "rule1": "Yuborgandan keyin ortga qaytib bo‘lmaydi",
@@ -51,8 +51,10 @@
     "timesUpAutoSubmitting": "Vaqt tugadi. Avto-yuborilmoqda...",
     "autoSubmitted": "Avto-yuborildi (maket)",
     "submitted": "Imtihon yuborildi (maket)",
-    "noBackDuringExam": "Imtihon vaqtida orqaga qaytib bo‘lmaydi."
-
+    "backDisabled": "Imtihon vaqtida orqaga qaytish o'chirib qo'yilgan.",
+    "copyDisabled": "Xavfsizlik maqsadida nusxa ko'chirish va joylashtirish taqiqlangan.",
+    "inspectDisabled": "Imtihon vaqtida dasturchi asboblari o'chirib qo'yilgan.",
+    "violationWarning": "Ogohlantirish: Tab almashtirish aniqlandi ({{count}}). Bu qoidabuzarlik qayd etilmoqda."
   },
   "login": {
     "title": "Talaba imtihon portali",
@@ -70,7 +72,9 @@
     "loggingIn": "Kirilmoqda...",
     "fillAll": "Iltimos, barcha maydonlarni to‘ldiring",
     "success": "Muvaffaqiyatli kirdingiz",
-    "failed": "Kirish amalga oshmadi"
+    "failed": "Kirish amalga oshmadi",
+    "student": "Talaba",
+    "otp": "Bir martalik kodni kiriting"
   },
   "result": {
     "loading": "Natijalar yuklanmoqda...",
