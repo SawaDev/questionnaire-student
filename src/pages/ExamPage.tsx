@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { examsApi, attemptsApi } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,7 @@ import { CheckCircle2, Wifi, WifiOff, Flag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { formatNewTab } from '@/lib/utils';
 import alertSound from '@/assets/alert.ogg';
+import { Input } from '@/components/ui/input';
 
 type AnswerState = {
   selectedOption?: string; // single
@@ -33,10 +34,19 @@ function formatTime(seconds: number) {
 const NO_EXAM_TOAST_ID = 'exam-no-exam';
 const MISSING_ATTEMPT_TOAST_ID = 'missing-attempt-id';
 
+// ✅ TEMP (long-term: move to backend)
+const TEACHER_PASSWORD = 'qwerty1234';
+
 export function ExamPage() {
   const { t } = useTranslation();
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
+
+  const LOCK_KEY = useMemo(() => (attemptId ? `exam_lock_${attemptId}` : ''), [attemptId]);
+  const LOCK_REASON_KEY = useMemo(
+    () => (attemptId ? `exam_lock_reason_${attemptId}` : ''),
+    [attemptId],
+  );
 
   const [questions, setQuestions] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -44,6 +54,44 @@ export function ExamPage() {
   const [showSubmitDialog, setShowSubmitDialog] = useState(false);
 
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  const [loading, setLoading] = useState(true);
+  const [answers, setAnswers] = useState<AnswersMap>({});
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+
+  const [openImage, setOpenImage] = useState<string | null>(null);
+  const [sessionOk, setSessionOk] = useState(false);
+  const [violationCount, setViolationCount] = useState(0);
+
+  // ✅ LOCK state
+  const [isLocked, setIsLocked] = useState(false);
+  const [teacherPass, setTeacherPass] = useState('');
+  const [lockReason, setLockReason] = useState<string>('');
+
+  // prevents multiple lock triggers in a row
+  const lockOnceRef = useRef(false);
+
+  const didInitRef = useRef(false);
+
+  const currentQuestion = questions[currentIndex];
+
+  const displayTime = formatTime(Math.max(0, remainingSeconds));
+  const isWarning = remainingSeconds <= 5 * 60;
+  const isExpired = remainingSeconds <= 0;
+
+  // ✅ Restore LOCK after refresh (must be BEFORE anti-cheat listeners)
+  useEffect(() => {
+    if (!attemptId) return;
+
+    const locked = localStorage.getItem(LOCK_KEY) === '1';
+    const reason = localStorage.getItem(LOCK_REASON_KEY) || '';
+
+    if (locked) {
+      setIsLocked(true);
+      setLockReason(reason);
+      lockOnceRef.current = true;
+    }
+  }, [attemptId, LOCK_KEY, LOCK_REASON_KEY]);
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
@@ -56,17 +104,133 @@ export function ExamPage() {
     };
   }, []);
 
-  const [loading, setLoading] = useState(true);
-  const [answers, setAnswers] = useState<AnswersMap>({});
-  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const doSubmit = useCallback(
+    async (auto: boolean) => {
+      if (!attemptId) return;
 
-  const [openImage, setOpenImage] = useState<string | null>(null);
-  const [sessionOk, setSessionOk] = useState(false);
-  const [, setViolationCount] = useState(0);
+      try {
+        await attemptsApi.submitAttempt(Number(attemptId));
+        localStorage.setItem(`completed_${attemptId}`, 'true');
 
-  const currentQuestion = questions[currentIndex];
+        toast.success(auto ? t('exam.autoSubmitted') : t('exam.submitted'), {
+          id: auto ? 'exam-auto-submitted' : 'exam-submitted',
+        });
 
-  // ✅ Anti-cheat: Prevent back navigation, copy/paste, and inspect element
+        navigate(`/result/${attemptId}`, { replace: true });
+      } catch (error) {
+        toast.error('Failed to submit exam');
+      }
+    },
+    [attemptId, navigate, t],
+  );
+
+  // ✅ Session/auth guard (prevents opening exam after logout via Back)
+  useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+
+    if (!attemptId) {
+      toast.error(t('errors.missingAttemptId'), { id: MISSING_ATTEMPT_TOAST_ID });
+      navigate('/login', { replace: true });
+      return;
+    }
+
+    const storedAttempt = localStorage.getItem('currentAttempt');
+    if (!storedAttempt) {
+      toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
+      setSessionOk(false);
+      navigate('/login', { replace: true });
+      return;
+    }
+
+    const fetchExamData = async () => {
+      try {
+        const attempt = JSON.parse(storedAttempt);
+        const examId = attempt.exam?.id || attempt.examId;
+
+        if (!examId) throw new Error('Missing exam ID in attempt data');
+
+        const [examRes, questionsRes, stateRes] = await Promise.all([
+          examsApi.getExam(examId),
+          examsApi.getQuestions(examId, Number(attemptId)),
+          attemptsApi.getState(Number(attemptId)),
+        ]);
+
+        setExamTitle(examRes.data.title);
+        setQuestions(questionsRes.data);
+
+        // Map backend state to frontend answers map
+        const backendAnswers = stateRes.data.answers || {};
+        const mappedAnswers: AnswersMap = {};
+        Object.entries(backendAnswers).forEach(([qId, val]: [string, any]) => {
+          mappedAnswers[Number(qId)] = {
+            selectedOptions: Array.isArray(val) ? val : undefined,
+            selectedOption: !Array.isArray(val) ? val : undefined,
+          };
+        });
+        setAnswers(mappedAnswers);
+
+        // Timer setup
+        const durationSeconds = examRes.data.duration * 60;
+        const startedAt = new Date(stateRes.data.startedAt).getTime();
+
+        const updateTimer = () => {
+          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+          const left = Math.max(0, durationSeconds - elapsed);
+          setRemainingSeconds(left);
+
+          if (left === 0) doSubmit(true);
+        };
+
+        updateTimer();
+        const timerId = setInterval(updateTimer, 1000);
+
+        setSessionOk(true);
+        return () => clearInterval(timerId);
+      } catch (error) {
+        toast.error(t('errors.invalidExam'), { id: 'exam-invalid-exam' });
+        setSessionOk(false);
+        navigate('/login', { replace: true });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchExamData();
+  }, [attemptId, navigate, t, doSubmit]);
+
+  // ✅ lock helper (persists to localStorage)
+  const lockExam = useCallback(
+    async (reason: string) => {
+      if (!attemptId) return;
+      if (lockOnceRef.current) return;
+
+      lockOnceRef.current = true;
+
+      setLockReason(reason);
+      setIsLocked(true);
+
+      localStorage.setItem(LOCK_KEY, '1');
+      localStorage.setItem(LOCK_REASON_KEY, reason);
+
+      // Play alert sound
+      try {
+        const audio = new Audio(alertSound);
+        audio.play().catch(() => {});
+      } catch {}
+
+      setViolationCount((prev) => {
+        const next = prev + 1;
+        toast.warning(t('exam.violationWarning', { count: next }), { id: 'anti-cheat-violation' });
+        return next;
+      });
+
+      attemptsApi.recordViolation(Number(attemptId), reason).catch(console.error);
+    },
+    [attemptId, LOCK_KEY, LOCK_REASON_KEY, t],
+  );
+
+  // ✅ Anti-cheat: Prevent back navigation, copy/paste, inspect element + LOCK ON TAB SWITCH/BLUR
   useEffect(() => {
     if (!sessionOk) return;
 
@@ -92,7 +256,6 @@ export function ExamPage() {
 
     // 4. Prevent Inspect Element Shortcuts
     const onKeyDown = (e: KeyboardEvent) => {
-      // F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U, Ctrl+Shift+C
       if (
         e.key === 'F12' ||
         ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'I' || e.key === 'J' || e.key === 'C')) ||
@@ -104,25 +267,16 @@ export function ExamPage() {
       }
     };
 
-    // 5. Detect Tab Switching (Violations)
+    // 5. Detect Tab Switching (LOCK)
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
-        const type = 'TAB_SWITCH';
-        
-        // Play alert sound
-        const audio = new Audio(alertSound);
-        audio.play().catch(e => console.error('Failed to play alert sound:', e));
-
-        setViolationCount((prev) => {
-          const next = prev + 1;
-          toast.warning(t('exam.violationWarning', { count: next }), { id: 'anti-cheat-violation' });
-          
-          // Send to backend
-          attemptsApi.recordViolation(Number(attemptId), type).catch(console.error);
-          
-          return next;
-        });
+        lockExam('TAB_SWITCH');
       }
+    };
+
+    // 6. Detect leaving window (ALT+TAB / click another app) (LOCK)
+    const onBlur = () => {
+      lockExam('WINDOW_BLUR');
     };
 
     window.addEventListener('popstate', onPopState);
@@ -132,6 +286,7 @@ export function ExamPage() {
     window.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('keydown', onKeyDown);
     document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onBlur);
 
     return () => {
       window.removeEventListener('popstate', onPopState);
@@ -141,94 +296,9 @@ export function ExamPage() {
       window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onBlur);
     };
-  }, [sessionOk, t]);
-
-  // ✅ StrictMode guards
-  const didInitRef = useRef(false);
-
-  const displayTime = formatTime(Math.max(0, remainingSeconds));
-  const isWarning = remainingSeconds <= 5 * 60;
-  const isExpired = remainingSeconds <= 0;
-
-  // ✅ Session/auth guard (prevents opening exam after logout via Back)
-  useEffect(() => {
-    if (didInitRef.current) return;
-    didInitRef.current = true;
-
-    if (!attemptId) {
-      toast.error(t('errors.missingAttemptId'), { id: MISSING_ATTEMPT_TOAST_ID });
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    const storedAttempt = localStorage.getItem('currentAttempt');
-    if (!storedAttempt) {
-      toast.error(t('errors.noExam'), { id: NO_EXAM_TOAST_ID });
-      setSessionOk(false);
-      navigate('/login', { replace: true });
-      return;
-    }
-
-    const fetchExamData = async () => {
-      try {
-        const attempt = JSON.parse(storedAttempt);
-        const examId = attempt.exam?.id || attempt.examId;
-        
-        if (!examId) {
-          throw new Error("Missing exam ID in attempt data");
-        }
-        
-        const [examRes, questionsRes, stateRes] = await Promise.all([
-          examsApi.getExam(examId),
-          examsApi.getQuestions(examId, Number(attemptId)),
-          attemptsApi.getState(Number(attemptId))
-        ]);
-
-        setExamTitle(examRes.data.title);
-        setQuestions(questionsRes.data);
-        
-        // Map backend state to frontend answers map
-        const backendAnswers = stateRes.data.answers || {};
-        const mappedAnswers: AnswersMap = {};
-        Object.entries(backendAnswers).forEach(([qId, val]: [string, any]) => {
-          mappedAnswers[Number(qId)] = {
-            selectedOptions: Array.isArray(val) ? val : undefined,
-            selectedOption: !Array.isArray(val) ? val : undefined,
-          };
-        });
-        setAnswers(mappedAnswers);
-
-        // Timer setup
-        const durationSeconds = examRes.data.duration * 60;
-        const startedAt = new Date(stateRes.data.startedAt).getTime();
-        
-        const updateTimer = () => {
-          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-          const left = Math.max(0, durationSeconds - elapsed);
-          setRemainingSeconds(left);
-          
-          if (left === 0) {
-            doSubmit(true);
-          }
-        };
-
-        updateTimer();
-        const timerId = setInterval(updateTimer, 1000);
-
-        setSessionOk(true);
-        return () => clearInterval(timerId);
-      } catch (error) {
-        toast.error(t('errors.invalidExam'), { id: 'exam-invalid-exam' });
-        setSessionOk(false);
-        navigate('/login', { replace: true });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchExamData();
-  }, [attemptId, navigate, t]);
+  }, [sessionOk, t, attemptId, lockExam]);
 
   const handleSingleAnswerChange = async (optionId: string) => {
     const q = questions[currentIndex];
@@ -255,7 +325,6 @@ export function ExamPage() {
       : [...existing, optionId];
 
     try {
-      // Assuming backend supports array for multi-select
       await attemptsApi.saveAnswer(Number(attemptId), q.id, nextSelected as any);
       setAnswers((prev) => ({
         ...prev,
@@ -282,10 +351,7 @@ export function ExamPage() {
       const a = answers[q.id];
       const isMulti = (q.type ?? 'single') === 'multi';
 
-      const unanswered = isMulti
-        ? (a?.selectedOptions?.length ?? 0) === 0
-        : !a?.selectedOption;
-
+      const unanswered = isMulti ? (a?.selectedOptions?.length ?? 0) === 0 : !a?.selectedOption;
       const flagged = !!a?.isMarked;
       return unanswered && !flagged;
     });
@@ -298,21 +364,28 @@ export function ExamPage() {
     doSubmit(false);
   };
 
-  const doSubmit = async (auto: boolean) => {
-    if (!attemptId) return;
-
-    try {
-      await attemptsApi.submitAttempt(Number(attemptId));
-      localStorage.setItem(`completed_${attemptId}`, 'true');
-
-      toast.success(auto ? t('exam.autoSubmitted') : t('exam.submitted'), {
-        id: auto ? 'exam-auto-submitted' : 'exam-submitted',
-      });
-
-      navigate(`/result/${attemptId}`, { replace: true });
-    } catch (error) {
-      toast.error('Failed to submit exam');
+  // ✅ Teacher unlock (removes localStorage lock so refresh won’t unlock again)
+  const handleUnlock = () => {
+    const entered = teacherPass.trim();
+    if (!entered) {
+      toast.error('Enter teacher password');
+      return;
     }
+
+    if (entered !== TEACHER_PASSWORD) {
+      toast.error('Wrong password');
+      return;
+    }
+
+    setTeacherPass('');
+    setIsLocked(false);
+    setLockReason('');
+
+    localStorage.removeItem(LOCK_KEY);
+    localStorage.removeItem(LOCK_REASON_KEY);
+
+    lockOnceRef.current = false;
+    toast.success('Unlocked. Continue exam.');
   };
 
   if (loading) {
@@ -332,7 +405,7 @@ export function ExamPage() {
     return null;
   }
 
-  // ✅ If session became invalid (logout + back), redirect immediately (no flashes)
+  // ✅ If session became invalid (logout + back), redirect immediately
   if (!sessionOk) {
     navigate('/login', { replace: true });
     return null;
@@ -344,10 +417,7 @@ export function ExamPage() {
     const a = answers[q.id];
     const isMulti = (q.type ?? 'single') === 'multi';
 
-    const unanswered = isMulti
-      ? (a?.selectedOptions?.length ?? 0) === 0
-      : !a?.selectedOption;
-
+    const unanswered = isMulti ? (a?.selectedOptions?.length ?? 0) === 0 : !a?.selectedOption;
     const flagged = !!a?.isMarked;
     return unanswered && !flagged;
   }).length;
@@ -394,9 +464,7 @@ export function ExamPage() {
                     </span>
                   </div>
 
-                  <h2 className="text-xl font-semibold whitespace-pre-wrap">
-                    {currentQuestion.title}
-                  </h2>
+                  <h2 className="text-xl font-semibold whitespace-pre-wrap">{currentQuestion.title}</h2>
 
                   {currentQuestion.description && (
                     <p className="text-muted-foreground whitespace-pre-wrap">
@@ -421,9 +489,7 @@ export function ExamPage() {
 
                   <div className="space-y-3">
                     {currentQuestion.options.map((option: { id: string; text: string }) => {
-                      const isSelected = isMulti
-                        ? selectedMulti.includes(option.id)
-                        : selectedSingle === option.id;
+                      const isSelected = isMulti ? selectedMulti.includes(option.id) : selectedSingle === option.id;
 
                       const onPick = () => {
                         if (isMulti) handleMultiAnswerToggle(option.id);
@@ -485,10 +551,7 @@ export function ExamPage() {
                     const a = answers[q.id];
                     const qIsMulti = (q.type ?? 'single') === 'multi';
 
-                    const isAnswered = qIsMulti
-                      ? (a?.selectedOptions?.length ?? 0) > 0
-                      : !!a?.selectedOption;
-
+                    const isAnswered = qIsMulti ? (a?.selectedOptions?.length ?? 0) > 0 : !!a?.selectedOption;
                     const isMarked = !!a?.isMarked;
                     const isCurrent = index === currentIndex;
 
@@ -506,9 +569,7 @@ export function ExamPage() {
                         }`}
                       >
                         {index + 1}
-                        {isMarked && (
-                          <Flag className="absolute top-1 right-1 h-3.5 w-3.5 text-white/90" />
-                        )}
+                        {isMarked && <Flag className="absolute top-1 right-1 h-3.5 w-3.5 text-white/90" />}
                       </button>
                     );
                   })}
@@ -533,34 +594,60 @@ export function ExamPage() {
                   <p className="text-sm text-muted-foreground">
                     {t('exam.progress', { answered: answeredCount, total: questions.length })}
                   </p>
-
-                  {unansweredNotFlaggedCount > 0 && (
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {unansweredNotFlaggedCount} unanswered
-                    </p>
-                  )}
                 </div>
 
                 <Button className="w-full mt-4" onClick={handleSubmit} disabled={isExpired}>
                   {t('exam.finish')}
                 </Button>
 
-                {isExpired && (
-                  <p className="text-xs text-destructive mt-2">{t('exam.timeUpSubmitting')}</p>
-                )}
+                {isExpired && <p className="text-xs text-destructive mt-2">{t('exam.timeUpSubmitting')}</p>}
               </CardContent>
             </Card>
           </div>
         </div>
       </div>
 
+      {/* ✅ LOCK MODAL (persists after refresh, cannot close) */}
+      <Dialog open={isLocked}>
+        <DialogContent
+          className="sm:max-w-md [&>button]:hidden"
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          onPointerDownOutside={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>Exam paused</DialogTitle>
+            <DialogDescription>
+              You left the exam tab/window. Ask your teacher to enter the password to continue.
+              {lockReason ? (
+                <span className="block mt-2 text-xs text-muted-foreground">Reason: {lockReason}</span>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <Input
+              type="password"
+              placeholder="Teacher password"
+              value={teacherPass}
+              onChange={(e) => setTeacherPass(e.target.value)}
+              autoFocus
+            />
+          </div>
+
+          <DialogFooter>
+            <Button onClick={handleUnlock} className="w-full">
+              Unlock
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Submit dialog */}
       <Dialog open={showSubmitDialog} onOpenChange={setShowSubmitDialog}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t('exam.unansweredDialogTitle')}</DialogTitle>
-            <DialogDescription>
-              {t('exam.unansweredDialogDesc', { count: unansweredNotFlaggedCount })}
-            </DialogDescription>
+            <DialogDescription>{t('exam.unansweredDialogDesc', { count: unansweredNotFlaggedCount })}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowSubmitDialog(false)}>
@@ -571,14 +658,11 @@ export function ExamPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Image dialog */}
       <Dialog open={!!openImage} onOpenChange={(v) => !v && setOpenImage(null)}>
         <DialogContent className="max-w-4xl">
           {openImage && (
-            <img
-              src={openImage}
-              alt="Full"
-              className="w-full h-auto max-h-[80vh] object-contain rounded"
-            />
+            <img src={openImage} alt="Full" className="w-full h-auto max-h-[80vh] object-contain rounded" />
           )}
         </DialogContent>
       </Dialog>
