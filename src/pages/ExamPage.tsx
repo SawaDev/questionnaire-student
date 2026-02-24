@@ -19,8 +19,8 @@ import alertSound from '@/assets/alert.ogg';
 import { Input } from '@/components/ui/input';
 
 type AnswerState = {
-  selectedOption?: string; // single
-  selectedOptions?: string[]; // multi
+  selectedOption?: string; // single -> option.id (string)
+  selectedOptions?: string[]; // multi -> option.id[] (string[])
   isMarked?: boolean;
 };
 type AnswersMap = Record<number, AnswerState>;
@@ -37,16 +37,43 @@ const MISSING_ATTEMPT_TOAST_ID = 'missing-attempt-id';
 // ✅ TEMP (long-term: move to backend)
 const TEACHER_PASSWORD = 'qwerty1234';
 
+function toStrId(v: unknown): string {
+  // Normalize any id (number|string) -> string
+  if (v === null || v === undefined) return '';
+  return String(v);
+}
+
+function normalizeBackendAnswer(val: any): { single?: string; multi?: string[] } {
+  if (Array.isArray(val)) {
+    return { multi: val.map(toStrId).filter(Boolean) };
+  }
+  if (val === null || val === undefined) return {};
+  return { single: toStrId(val) };
+}
+
+// Determine question type safely even if backend doesn't send it
+function isQuestionMulti(q: any): boolean {
+  const explicit = String(q?.type ?? '').toLowerCase();
+  if (explicit === 'multi') return true;
+  if (explicit === 'single') return false;
+
+  // Fallback: if backend sends "allowMultipleCorrect" or "correctOptionIds"
+  if (q?.allowMultipleCorrect === true) return true;
+
+  const correctIds = q?.correctOptionIds;
+  if (Array.isArray(correctIds) && correctIds.length > 1) return true;
+
+  // Default
+  return false;
+}
+
 export function ExamPage() {
   const { t } = useTranslation();
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
   const LOCK_KEY = useMemo(() => (attemptId ? `exam_lock_${attemptId}` : ''), [attemptId]);
-  const LOCK_REASON_KEY = useMemo(
-    () => (attemptId ? `exam_lock_reason_${attemptId}` : ''),
-    [attemptId],
-  );
+  const LOCK_REASON_KEY = useMemo(() => (attemptId ? `exam_lock_reason_${attemptId}` : ''), [attemptId]);
 
   const [questions, setQuestions] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -156,15 +183,27 @@ export function ExamPage() {
         ]);
 
         setExamTitle(examRes.data.title);
-        setQuestions(questionsRes.data);
 
-        // Map backend state to frontend answers map
+        // ✅ Normalize question + option ids to string to avoid mismatch bugs
+        const normalizedQuestions = (questionsRes.data ?? []).map((q: any) => ({
+          ...q,
+          id: Number(q.id),
+          options: (q.options ?? []).map((o: any) => ({
+            ...o,
+            id: toStrId(o.id),
+          })),
+        }));
+
+        setQuestions(normalizedQuestions);
+
+        // ✅ Map backend state to frontend answers map (normalize ids -> string)
         const backendAnswers = stateRes.data.answers || {};
         const mappedAnswers: AnswersMap = {};
         Object.entries(backendAnswers).forEach(([qId, val]: [string, any]) => {
+          const n = normalizeBackendAnswer(val);
           mappedAnswers[Number(qId)] = {
-            selectedOptions: Array.isArray(val) ? val : undefined,
-            selectedOption: !Array.isArray(val) ? val : undefined,
+            selectedOptions: n.multi,
+            selectedOption: n.single,
           };
         });
         setAnswers(mappedAnswers);
@@ -299,24 +338,30 @@ export function ExamPage() {
     };
   }, [sessionOk, t, attemptId, lockExam]);
 
-  const handleSingleAnswerChange = async (optionId: string) => {
+  const handleSingleAnswerChange = async (rawOptionId: string) => {
     const q = questions[currentIndex];
-    if (!q) return;
+    if (!q || !attemptId) return;
+
+    const optionId = toStrId(rawOptionId);
 
     try {
+      // ✅ always send option.id (string) to backend
       await attemptsApi.saveAnswer(Number(attemptId), q.id, optionId);
+
       setAnswers((prev) => ({
         ...prev,
-        [q.id]: { ...(prev[q.id] || {}), selectedOption: optionId },
+        [q.id]: { ...(prev[q.id] || {}), selectedOption: optionId, selectedOptions: undefined },
       }));
     } catch (error) {
       toast.error('Failed to save answer');
     }
   };
 
-  const handleMultiAnswerToggle = async (optionId: string) => {
+  const handleMultiAnswerToggle = async (rawOptionId: string) => {
     const q = questions[currentIndex];
-    if (!q) return;
+    if (!q || !attemptId) return;
+
+    const optionId = toStrId(rawOptionId);
 
     const existing = answers[q.id]?.selectedOptions ?? [];
     const nextSelected = existing.includes(optionId)
@@ -324,10 +369,12 @@ export function ExamPage() {
       : [...existing, optionId];
 
     try {
-      await attemptsApi.saveAnswer(Number(attemptId), q.id, nextSelected as any);
+      // ✅ always send option.id[] (string[]) to backend
+      await attemptsApi.saveAnswer(Number(attemptId), q.id, nextSelected);
+
       setAnswers((prev) => ({
         ...prev,
-        [q.id]: { ...(prev[q.id] || {}), selectedOptions: nextSelected },
+        [q.id]: { ...(prev[q.id] || {}), selectedOptions: nextSelected, selectedOption: undefined },
       }));
     } catch (error) {
       toast.error('Failed to save answer');
@@ -340,17 +387,17 @@ export function ExamPage() {
 
   const answeredCount = questions.filter((q) => {
     const a = answers[q.id];
-    const isMulti = (q.type ?? 'single') === 'multi';
-    if (isMulti) return (a?.selectedOptions?.length ?? 0) > 0;
+    const multi = isQuestionMulti(q);
+    if (multi) return (a?.selectedOptions?.length ?? 0) > 0;
     return !!a?.selectedOption;
   }).length;
 
   const handleSubmit = () => {
     const unansweredNotFlagged = questions.filter((q) => {
       const a = answers[q.id];
-      const isMulti = (q.type ?? 'single') === 'multi';
+      const multi = isQuestionMulti(q);
 
-      const unanswered = isMulti ? (a?.selectedOptions?.length ?? 0) === 0 : !a?.selectedOption;
+      const unanswered = multi ? (a?.selectedOptions?.length ?? 0) === 0 : !a?.selectedOption;
       const flagged = !!a?.isMarked;
       return unanswered && !flagged;
     });
@@ -414,16 +461,16 @@ export function ExamPage() {
 
   const unansweredNotFlaggedCount = questions.filter((q) => {
     const a = answers[q.id];
-    const isMulti = (q.type ?? 'single') === 'multi';
-
-    const unanswered = isMulti ? (a?.selectedOptions?.length ?? 0) === 0 : !a?.selectedOption;
+    const multi = isQuestionMulti(q);
+    const unanswered = multi ? (a?.selectedOptions?.length ?? 0) === 0 : !a?.selectedOption;
     const flagged = !!a?.isMarked;
     return unanswered && !flagged;
   }).length;
 
-  const isMulti = (currentQuestion?.type ?? 'single') === 'multi';
-  const selectedSingle = currentAnswer?.selectedOption;
-  const selectedMulti = currentAnswer?.selectedOptions ?? [];
+  const isMulti = currentQuestion ? isQuestionMulti(currentQuestion) : false;
+
+  const selectedSingle = currentAnswer?.selectedOption ? toStrId(currentAnswer.selectedOption) : undefined;
+  const selectedMulti = (currentAnswer?.selectedOptions ?? []).map(toStrId);
 
   return (
     <div className="min-h-screen bg-background">
@@ -487,17 +534,18 @@ export function ExamPage() {
                   ) : null}
 
                   <div className="space-y-3">
-                    {currentQuestion.options.map((option: { id: string; text: string }) => {
-                      const isSelected = isMulti ? selectedMulti.includes(option.id) : selectedSingle === option.id;
+                    {(currentQuestion.options ?? []).map((option: { id: string; text: string }) => {
+                      const optId = toStrId(option.id);
+                      const isSelected = isMulti ? selectedMulti.includes(optId) : selectedSingle === optId;
 
                       const onPick = () => {
-                        if (isMulti) handleMultiAnswerToggle(option.id);
-                        else handleSingleAnswerChange(option.id);
+                        if (isMulti) handleMultiAnswerToggle(optId);
+                        else handleSingleAnswerChange(optId);
                       };
 
                       return (
                         <button
-                          key={option.id}
+                          key={optId}
                           onClick={onPick}
                           className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
                             isSelected ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50'
@@ -520,18 +568,11 @@ export function ExamPage() {
                   </div>
 
                   <div className="flex gap-3 pt-4">
-                    <Button
-                      variant="outline"
-                      onClick={() => handleNavigate(currentIndex - 1)}
-                      disabled={currentIndex === 0}
-                    >
+                    <Button variant="outline" onClick={() => handleNavigate(currentIndex - 1)} disabled={currentIndex === 0}>
                       {t('exam.previous')}
                     </Button>
 
-                    <Button
-                      onClick={() => handleNavigate(currentIndex + 1)}
-                      disabled={currentIndex === questions.length - 1}
-                    >
+                    <Button onClick={() => handleNavigate(currentIndex + 1)} disabled={currentIndex === questions.length - 1}>
                       {t('exam.next')}
                     </Button>
                   </div>
@@ -548,7 +589,7 @@ export function ExamPage() {
                 <div className="grid grid-cols-5 gap-2">
                   {questions.map((q: any, index: number) => {
                     const a = answers[q.id];
-                    const qIsMulti = (q.type ?? 'single') === 'multi';
+                    const qIsMulti = isQuestionMulti(q);
 
                     const isAnswered = qIsMulti ? (a?.selectedOptions?.length ?? 0) > 0 : !!a?.selectedOption;
                     const isMarked = !!a?.isMarked;
@@ -617,9 +658,7 @@ export function ExamPage() {
             <DialogTitle>Exam paused</DialogTitle>
             <DialogDescription>
               You left the exam tab/window. Ask your teacher to enter the password to continue.
-              {lockReason ? (
-                <span className="block mt-2 text-xs text-muted-foreground">Reason: {lockReason}</span>
-              ) : null}
+              {lockReason ? <span className="block mt-2 text-xs text-muted-foreground">Reason: {lockReason}</span> : null}
             </DialogDescription>
           </DialogHeader>
 
@@ -660,9 +699,7 @@ export function ExamPage() {
       {/* Image dialog */}
       <Dialog open={!!openImage} onOpenChange={(v) => !v && setOpenImage(null)}>
         <DialogContent className="max-w-4xl">
-          {openImage && (
-            <img src={openImage} alt="Full" className="w-full h-auto max-h-[80vh] object-contain rounded" />
-          )}
+          {openImage && <img src={openImage} alt="Full" className="w-full h-auto max-h-[80vh] object-contain rounded" />}
         </DialogContent>
       </Dialog>
     </div>
