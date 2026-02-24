@@ -61,7 +61,6 @@ export function ExamPage() {
 
   const [openImage, setOpenImage] = useState<string | null>(null);
   const [sessionOk, setSessionOk] = useState(false);
-  const [violationCount, setViolationCount] = useState(0);
 
   // ✅ LOCK state
   const [isLocked, setIsLocked] = useState(false);
@@ -219,11 +218,11 @@ export function ExamPage() {
         audio.play().catch(() => {});
       } catch {}
 
-      setViolationCount((prev) => {
-        const next = prev + 1;
-        toast.warning(t('exam.violationWarning', { count: next }), { id: 'anti-cheat-violation' });
-        return next;
-      });
+      // setViolationCount((prev) => {
+      //   const next = prev + 1;
+      //   toast.warning(t('exam.violationWarning', { count: next }), { id: 'anti-cheat-violation' });
+      //   return next;
+      // });
 
       attemptsApi.recordViolation(Number(attemptId), reason).catch(console.error);
     },
