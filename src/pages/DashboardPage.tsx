@@ -165,7 +165,7 @@ export function DashboardPage() {
                 <div>
                   <p className="font-medium">{t('dashboard.questions')}</p>
                   <p className="text-sm text-muted-foreground">
-                    {t('dashboard.questionsCount', { count: questionCount })}
+                    {t('dashboard.questionsCount', { count: questionCount < 25 ? questionCount : 25 })}
                   </p>
                 </div>
               </div>

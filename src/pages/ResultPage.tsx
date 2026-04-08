@@ -22,7 +22,6 @@ interface ReviewAnswer {
   type: 'single' | 'multi';
   selectedOptionIds: string[];
   isCorrect: boolean;
-  points: number;
   isMarked: boolean;
   images?: string[];
 }
@@ -38,8 +37,9 @@ export function ResultPage() {
   const [loading, setLoading] = useState(true);
   const [resultMeta, setResultMeta] = useState<{
     examTitle: string;
-    score: number;
-    totalPoints: number;
+    scoreNumerator: number;
+    scoreDenominator: number;
+    percentage: number;
     grade: string;
     submittedAt?: string;
     violationCount?: number;
@@ -86,20 +86,39 @@ export function ResultPage() {
             correctOptionIds: [],
             selectedOptionIds,
             isCorrect,
-            points: q.points || 1,
             isMarked: false,
             images: q.assets || [],
           };
         });
 
-        const totalPoints = review.reduce((sum, a) => sum + a.points, 0);
-        const score = resultData.score;
+        const sd = resultData.scoreDisplay as
+          | { numerator?: number; denominator?: number }
+          | undefined;
+        const correct = resultData.correctAnswersCount ?? 0;
+        const totalQ = resultData.totalQuestionsCount ?? 0;
+        const scoreNumerator = sd?.numerator ?? resultData.score ?? correct;
+        const scoreDenominator =
+          sd?.denominator ??
+          (totalQ > 0 ? totalQ : Math.max(1, review.length));
+
+        let percentage: number;
+        if (
+          typeof resultData.percentage === 'number' &&
+          !Number.isNaN(resultData.percentage)
+        ) {
+          percentage = Math.round(resultData.percentage);
+        } else if (totalQ > 0) {
+          percentage = Math.round((correct / totalQ) * 100);
+        } else {
+          percentage = 0;
+        }
 
         setAnswers(review);
         setResultMeta({
           examTitle: exam.title,
-          score,
-          totalPoints,
+          scoreNumerator,
+          scoreDenominator,
+          percentage,
           grade: resultData.grade,
           submittedAt: resultData.finishedAt,
           violationCount: resultData.violations?.length || 0,
@@ -140,7 +159,7 @@ export function ResultPage() {
 
   if (!resultMeta) return null;
 
-  const percentage = Math.round((resultMeta.score / resultMeta.totalPoints) * 100);
+  const percentage = resultMeta.percentage;
   const grade = resultMeta.grade;
 
   // ✅ 24-hour format
@@ -178,7 +197,7 @@ export function ResultPage() {
               <div className="text-center p-4 bg-muted rounded-lg">
                 <p className="text-sm text-muted-foreground">{t('result.score')}</p>
                 <p className="text-3xl font-bold">
-                  {resultMeta.score} / {resultMeta.totalPoints}
+                  {resultMeta.scoreNumerator} / {resultMeta.scoreDenominator}
                 </p>
               </div>
 
@@ -235,10 +254,6 @@ export function ResultPage() {
                           {t('result.markedForReview')}
                         </span>
                       )}
-
-                      <span className="text-sm text-muted-foreground ml-auto">
-                        {t('result.points', { count: answer.points })}
-                      </span>
                     </div>
 
                     <p className="font-medium mb-1 whitespace-pre-wrap">{answer.text}</p>
