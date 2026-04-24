@@ -477,6 +477,7 @@ export function ExamPage() {
       <div className={`border-b sticky top-0 z-10 bg-background ${isWarning ? 'bg-destructive/10' : ''}`}>
         <div className="container mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-4">
+            <img src="/images/logo.png" alt="Logo" className="h-10 w-auto" />
             <h1 className="font-semibold text-lg">{examTitle}</h1>
 
             {!isOnline ? (
@@ -584,6 +585,9 @@ export function ExamPage() {
           <div className="lg:col-span-1">
             <Card>
               <CardContent className="p-4">
+                <div className="flex justify-center mb-4">
+                  <img src="/images/logo.png" alt="Logo" className="h-16 w-auto" />
+                </div>
                 <h3 className="font-semibold mb-4">{t('exam.navigation')}</h3>
 
                 <div className="grid grid-cols-5 gap-2">
