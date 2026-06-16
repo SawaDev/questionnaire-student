@@ -35,7 +35,7 @@ const NO_EXAM_TOAST_ID = 'exam-no-exam';
 const MISSING_ATTEMPT_TOAST_ID = 'missing-attempt-id';
 
 // ✅ TEMP (long-term: move to backend)
-const TEACHER_PASSWORD = 'qwerty1234';
+const TEACHER_PASSWORD = '307988079+';
 
 function toStrId(v: unknown): string {
   // Normalize any id (number|string) -> string
