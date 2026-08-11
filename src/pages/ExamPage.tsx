@@ -14,7 +14,8 @@ import {
 import { toast } from 'sonner';
 import { CheckCircle2, Wifi, WifiOff, Flag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { formatNewTab } from '@/lib/utils';
+import { pickLangLine } from '@/lib/utils';
+import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import alertSound from '@/assets/alert.ogg';
 import { Input } from '@/components/ui/input';
 
@@ -68,7 +69,7 @@ function isQuestionMulti(q: any): boolean {
 }
 
 export function ExamPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
@@ -493,8 +494,11 @@ export function ExamPage() {
             )}
           </div>
 
-          <div className={`text-2xl font-mono font-bold ${isWarning ? 'text-destructive' : ''}`}>
-            {displayTime}
+          <div className="flex items-center gap-4">
+            <LanguageSwitcher />
+            <div className={`text-2xl font-mono font-bold ${isWarning ? 'text-destructive' : ''}`}>
+              {displayTime}
+            </div>
           </div>
         </div>
       </div>
@@ -511,11 +515,11 @@ export function ExamPage() {
                     </span>
                   </div>
 
-                  <h2 className="text-xl font-semibold whitespace-pre-wrap">{currentQuestion.title}</h2>
+                  <h2 className="text-xl font-semibold whitespace-pre-wrap">{pickLangLine(currentQuestion.title, i18n.language)}</h2>
 
                   {currentQuestion.description && (
                     <p className="text-muted-foreground whitespace-pre-wrap">
-                      {formatNewTab(currentQuestion.description)}
+                      {pickLangLine(currentQuestion.description, i18n.language)}
                     </p>
                   )}
 
@@ -561,7 +565,7 @@ export function ExamPage() {
                               {isSelected && <CheckCircle2 className="h-3 w-3 text-primary-foreground" />}
                             </div>
 
-                            <span className="whitespace-pre-wrap">{formatNewTab(option.text)}</span>
+                            <span className="whitespace-pre-wrap">{pickLangLine(option.text, i18n.language)}</span>
                           </div>
                         </button>
                       );

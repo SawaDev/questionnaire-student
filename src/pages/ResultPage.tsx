@@ -12,7 +12,8 @@ import {
 import { CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { formatNewTab } from '@/lib/utils';
+import { pickLangLine } from '@/lib/utils';
+import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 
 interface ReviewAnswer {
   questionId: number;
@@ -30,7 +31,7 @@ const NO_RESULT_TOAST_ID = 'no-result-found';
 const FAILED_LOAD_TOAST_ID = 'result-failed-load';
 
 export function ResultPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { attemptId } = useParams<{ attemptId: string }>();
   const navigate = useNavigate();
 
@@ -181,15 +182,20 @@ export function ResultPage() {
         {/* Score Card */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-2xl">{resultMeta.examTitle}</CardTitle>
-            <CardDescription>
-              {t('result.title')}
-              {resultMeta.submittedAt ? (
-                <span className="ml-2 text-xs text-muted-foreground">
-                  • {t('result.submitted', { date: submittedAtText })}
-                </span>
-              ) : null}
-            </CardDescription>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <CardTitle className="text-2xl">{resultMeta.examTitle}</CardTitle>
+                <CardDescription>
+                  {t('result.title')}
+                  {resultMeta.submittedAt ? (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      • {t('result.submitted', { date: submittedAtText })}
+                    </span>
+                  ) : null}
+                </CardDescription>
+              </div>
+              <LanguageSwitcher />
+            </div>
           </CardHeader>
 
           <CardContent className="space-y-6">
@@ -256,10 +262,10 @@ export function ResultPage() {
                       )}
                     </div>
 
-                    <p className="font-medium mb-1 whitespace-pre-wrap">{answer.text}</p>
+                    <p className="font-medium mb-1 whitespace-pre-wrap">{pickLangLine(answer.text, i18n.language)}</p>
                     {answer.description && (
                       <p className="text-sm text-muted-foreground mb-3 whitespace-pre-wrap">
-                        {formatNewTab(answer.description)}
+                        {pickLangLine(answer.description, i18n.language)}
                       </p>
                     )}
 
@@ -302,7 +308,7 @@ export function ResultPage() {
                           <span className="font-medium">
                             {String.fromCharCode(65 + answer.options.indexOf(option))}.
                           </span>
-                          <span className="whitespace-pre-wrap">{formatNewTab(option.text)}</span>
+                          <span className="whitespace-pre-wrap">{pickLangLine(option.text, i18n.language)}</span>
 
                           {showCheck && (
                             <CheckCircle2 className="h-4 w-4 text-green-600 ml-auto" />
